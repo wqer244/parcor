@@ -27,7 +27,13 @@ SplashScreen.preventAutoHideAsync();
 function useLockLandscape() {
   useEffect(() => {
     if (Platform.OS === 'web') return;
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
+    // NOTE: `LANDSCAPE` (unqualified) allows the OS to pick EITHER
+    // landscape-left or landscape-right, and can flip between them as the
+    // device physically rotates. That flip does not stay in sync with our
+    // manual touch hit-testing in GameControls, which is why the D-pad and
+    // jump button could end up swapped (walk -> jump, jump -> walk).
+    // Locking to a single specific direction fixes that permanently.
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT).catch(() => {});
   }, []);
 }
 
