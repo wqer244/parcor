@@ -1,8 +1,8 @@
 /**
- * Voice chat button – UI is complete.
- * Full voice transmission uses Agora.io (App ID: af3d133c3cbe403895240eafde8e6d5b).
- * Agora's native SDK (react-native-agora) requires a dev build; the mute toggle
- * state is preserved here and will wire into AgoraRtcEngine in a dev build.
+ * Voice chat button — pure UI (mic on/off icon + press handler).
+ * The actual mic permission request, joining the voice channel, and
+ * mute/unmute are handled by services/voiceChat.ts, wired up in
+ * app/game.tsx. This component just reflects/toggles that state.
  */
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
