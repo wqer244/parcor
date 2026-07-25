@@ -28,6 +28,11 @@ interface Props {
   playerColor: string;
   remotePlayersRef: React.MutableRefObject<RemotePlayer3D[]>;
   cameraModeRef: React.MutableRefObject<CameraMode>;
+  // Free-look drag state (radians). yaw = horizontal turn, pitch = vertical
+  // tilt. Updated by a Pan gesture in game.tsx; read every frame here —
+  // exactly like physStateRef, so this doesn't need to be React state.
+  orbitYawRef: React.MutableRefObject<number>;
+  orbitPitchRef: React.MutableRefObject<number>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -238,7 +243,7 @@ function WebPlaceholder() {
 }
 
 // ── Native 3D renderer (hooks always called) ────────────────
-function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraModeRef }: Props) {
+function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef }: Props) {
   const rafRef = useRef<number>(0);
 
   const onContextCreate = useCallback(
@@ -326,28 +331,51 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
           if (!seen.has(id)) m.visible = false;
         }
 
-        // Forward direction implied by facingAngle (matches the formula
-        // used in game3DPhysics.ts: facingAngle = atan2(nx, nz))
-        const fdx = Math.sin(s.facingAngle);
-        const fdz = Math.cos(s.facingAngle);
+        // Free-look drag state — yaw turns left/right, pitch tilts up/down.
+        // This is set by a finger-drag gesture in game.tsx (see the
+        // full-screen GestureDetector there) and is independent of which
+        // way the player is walking, exactly like Roblox/Minecraft's
+        // drag-to-look camera.
+        const yaw = orbitYawRef.current;
+        const pitch = orbitPitchRef.current;
+        const cosYaw = Math.cos(yaw);
+        const sinYaw = Math.sin(yaw);
+        const cosPitch = Math.cos(pitch);
+        const sinPitch = Math.sin(pitch);
 
         let targetPos: THREE.Vector3;
         let targetLook: THREE.Vector3;
         let lerpSpeed = 0.07;
 
         if (mode === 'first') {
-          // Eyes-level, looking in the direction the player is facing
+          // Eyes-level; look direction comes straight from the drag (yaw =
+          // turn left/right, pitch = look up/down), not from facingAngle —
+          // so you can look around freely while walking in any direction.
+          const lookDx = sinYaw * cosPitch;
+          const lookDy = sinPitch;
+          const lookDz = cosYaw * cosPitch;
           targetPos = new THREE.Vector3(s.x, s.y + 1.6, s.z);
-          targetLook = new THREE.Vector3(s.x + fdx * 5, s.y + 1.6, s.z + fdz * 5);
-          lerpSpeed = 0.35; // snappier — first person shouldn't feel laggy
+          targetLook = new THREE.Vector3(s.x + lookDx * 5, s.y + 1.6 + lookDy * 5, s.z + lookDz * 5);
+          lerpSpeed = 0.45; // snappy — first-person look shouldn't lag behind the finger
         } else if (mode === 'top') {
-          // Straight overhead, small Z nudge avoids a degenerate lookAt
-          targetPos = new THREE.Vector3(s.x, s.y + 20, s.z + 0.01);
+          // Straight overhead, small Z nudge avoids a degenerate lookAt.
+          // Yaw still rotates the compass direction of the view; pitch is
+          // ignored here (staying perfectly overhead reads best).
+          targetPos = new THREE.Vector3(s.x + sinYaw * 0.01, s.y + 20, s.z + cosYaw * 0.01);
           targetLook = new THREE.Vector3(s.x, s.y, s.z);
         } else {
-          // 'third' — default chase camera, behind & above the player
-          targetPos = new THREE.Vector3(s.x, s.y + 5.8, s.z + 10);
-          targetLook = new THREE.Vector3(s.x, s.y + 1, s.z - 5);
+          // 'third' — orbiting chase camera: distance is fixed, yaw/pitch
+          // (from the drag gesture) rotate it around the player. Defaults
+          // (yaw 0, pitch ~0.447 rad) reproduce the original fixed
+          // behind-and-above view exactly. Pitch is kept positive by the
+          // clamp in game.tsx, so the camera can never dip below the player.
+          const ORBIT_DIST = 11.1;
+          targetPos = new THREE.Vector3(
+            s.x + sinYaw * cosPitch * ORBIT_DIST,
+            s.y + 1 + sinPitch * ORBIT_DIST,
+            s.z + cosYaw * cosPitch * ORBIT_DIST,
+          );
+          targetLook = new THREE.Vector3(s.x, s.y + 1, s.z);
         }
 
         camPos.lerp(targetPos, lerpSpeed);
