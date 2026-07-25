@@ -15,11 +15,20 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.parcor"
+      "bundleIdentifier": "com.parcor",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "نحتاج صلاحية المايك حتى تقدر تتكلم مع اللاعبين الآخرين بالغرفة."
+      }
     },
     "android": {
       "package": "com.parcor",
       "versionCode": 1,
+      "permissions": [
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#060612"
