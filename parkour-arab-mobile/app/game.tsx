@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { usePlayer } from '@/context/PlayerContext';
+import { joinVoiceChannel, leaveVoiceChannel, setVoiceMuted, destroyVoiceEngine } from '@/services/voiceChat';
 import { GameControls } from '@/components/GameControls';
 import { VoiceButton } from '@/components/VoiceButton';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -96,8 +97,22 @@ export default function GameScreen() {
 
   useEffect(() => {
     joinServer('parkour-arab-3d');
-    return () => { leaveServer(); };
+    // Voice channel name matches the game room, so everyone in the same
+    // room hears each other. uid 0 lets Agora assign one automatically.
+    joinVoiceChannel('parkour-arab-3d', 0);
+    return () => {
+      leaveServer();
+      leaveVoiceChannel();
+      destroyVoiceEngine();
+    };
   }, [joinServer, leaveServer]);
+
+  // Push the mute toggle to the actual mic every time it changes. Starts
+  // muted (isMuted defaults to true) so nobody is broadcast without
+  // explicitly tapping the mic button first.
+  useEffect(() => {
+    setVoiceMuted(isMuted);
+  }, [isMuted]);
 
   // Physics loop — 30 fps
   useEffect(() => {
