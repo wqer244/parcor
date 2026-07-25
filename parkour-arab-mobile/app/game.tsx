@@ -17,7 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { usePlayer } from '@/context/PlayerContext';
 import { GameControls } from '@/components/GameControls';
 import { VoiceButton } from '@/components/VoiceButton';
-import { GameRenderer3D, RemotePlayer3D } from '@/components/GameRenderer3D';
+import { GameRenderer3D, RemotePlayer3D, CameraMode } from '@/components/GameRenderer3D';
 import {
   stepPhysics3D,
   PhysState3D,
@@ -39,9 +39,19 @@ export default function GameScreen() {
   const inputRef = useRef<Input3D>({ forward: false, backward: false, left: false, right: false, jump: false });
   const frameRef = useRef(0);
   const remotePlayersRef = useRef<RemotePlayer3D[]>([]);
+  const cameraModeRef = useRef<CameraMode>('third');
+
+  // Cycle order + display info for the camera-perspective button
+  const CAMERA_ORDER: CameraMode[] = ['third', 'first', 'top'];
+  const CAMERA_INFO: Record<CameraMode, { icon: keyof typeof Ionicons.glyphMap; label: string }> = {
+    third: { icon: 'body', label: 'الشخص الثالث' },
+    first: { icon: 'eye', label: 'الشخص الأول' },
+    top: { icon: 'grid', label: 'منظور علوي' },
+  };
 
   // State — triggers UI updates only
   const [isMuted, setIsMuted] = useState(true);
+  const [cameraMode, setCameraMode] = useState<CameraMode>('third');
   const [hasFinished, setHasFinished] = useState(false);
   const [onlinePlayers, setOnlinePlayers] = useState(1);
   const [, forceUpdate] = useState(0);
@@ -106,6 +116,13 @@ export default function GameScreen() {
   const stopRight     = () => { inputRef.current.right    = false; };
   const doJump        = () => { inputRef.current.jump     = true; };
 
+  const cycleCamera = () => {
+    const nextIdx = (CAMERA_ORDER.indexOf(cameraModeRef.current) + 1) % CAMERA_ORDER.length;
+    const next = CAMERA_ORDER[nextIdx];
+    cameraModeRef.current = next;
+    setCameraMode(next);
+  };
+
   const restart = () => {
     physRef.current = makeInitState();
     inputRef.current = { forward: false, backward: false, left: false, right: false, jump: false };
@@ -124,6 +141,7 @@ export default function GameScreen() {
         physStateRef={physRef}
         playerColor={playerColor}
         remotePlayersRef={remotePlayersRef}
+        cameraModeRef={cameraModeRef}
       />
 
       {/* ── HUD top bar ─────────────────────────────── */}
@@ -145,7 +163,16 @@ export default function GameScreen() {
           <Text style={styles.progressTxt}>{progress}%</Text>
         </View>
 
+        <Pressable style={styles.camBtn} onPress={cycleCamera}>
+          <Ionicons name={CAMERA_INFO[cameraMode].icon} size={20} color="#00ffcc" />
+        </Pressable>
+
         <VoiceButton isMuted={isMuted} onToggle={() => setIsMuted((m) => !m)} />
+      </View>
+
+      {/* Current perspective label — brief, fades with the HUD */}
+      <View style={[styles.camLabel, { top: topPad + 44 }]} pointerEvents="none">
+        <Text style={styles.camLabelText}>{CAMERA_INFO[cameraMode].label}</Text>
       </View>
 
       {/* ── Controls ────────────────────────────────── */}
@@ -205,6 +232,32 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(0,255,204,0.3)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  camBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,255,204,0.12)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,255,204,0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  camLabel: {
+    position: 'absolute',
+    alignSelf: 'center',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  camLabelText: {
+    fontSize: 10,
+    color: 'rgba(0,255,204,0.7)',
+    backgroundColor: 'rgba(6,6,18,0.55)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   hudCenter: {
     flex: 1,
