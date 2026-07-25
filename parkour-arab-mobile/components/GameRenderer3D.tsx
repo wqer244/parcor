@@ -41,8 +41,21 @@ function cssHex(css: string): number {
 }
 
 // ── Character builder ──────────────────────────────────────
-// Sleek futuristic runner — smooth capsules, NO Roblox blocks
-function createCharacter(colorCss: string): THREE.Group {
+// Sleek futuristic runner — smooth capsules, NO Roblox blocks.
+// Returns both the group (for the scene) and direct references to the
+// moving parts (for animation) — grabbing children by array index was
+// fragile and was actually the reason the walk animation looked broken.
+interface CharacterRig {
+  group: THREE.Group;
+  torso: THREE.Object3D;
+  head: THREE.Object3D;
+  lArm: THREE.Object3D;
+  rArm: THREE.Object3D;
+  lLeg: THREE.Object3D;
+  rLeg: THREE.Object3D;
+}
+
+function createCharacter(colorCss: string): CharacterRig {
   const group = new THREE.Group();
   const accentHex = cssHex(colorCss);
 
@@ -64,67 +77,82 @@ function createCharacter(colorCss: string): THREE.Group {
     metalness: 0.0,
   });
 
-  // Head
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.23, 16, 12), skinMat);
-  head.position.y = 1.66;
-  group.add(head);
+  // Head — a small pivot group so it can nod/bob independently of the body
+  const headPivot = new THREE.Group();
+  headPivot.position.y = 1.66;
+  group.add(headPivot);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.23, 20, 16), skinMat);
+  headPivot.add(head);
 
   // Visor (glowing front half)
-  const visorGeo = new THREE.SphereGeometry(0.15, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  const visorGeo = new THREE.SphereGeometry(0.15, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
   const visor = new THREE.Mesh(visorGeo, accentMat);
-  visor.position.set(0, 1.66, -0.09);
+  visor.position.set(0, 0, -0.09);
   visor.rotation.x = 0.1;
-  group.add(visor);
+  headPivot.add(visor);
 
   // Helmet ring
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 8, 16), accentMat);
-  ring.position.y = 1.66;
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 10, 20), accentMat);
   ring.rotation.x = Math.PI / 2;
-  group.add(ring);
+  headPivot.add(ring);
 
-  // Torso
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.52, 4, 8), suitMat);
-  torso.position.y = 1.1;
-  group.add(torso);
+  // Torso — pivot at the hips so lean/bob reads naturally
+  const torsoPivot = new THREE.Group();
+  torsoPivot.position.y = 0.85;
+  group.add(torsoPivot);
+
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.52, 6, 12), suitMat);
+  torso.position.y = 0.25;
+  torsoPivot.add(torso);
 
   // Chest stripe
   const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.45, 0.2), accentMat);
-  stripe.position.set(0, 1.1, -0.18);
-  group.add(stripe);
+  stripe.position.set(0, 0.25, -0.18);
+  torsoPivot.add(stripe);
 
-  // Arms
-  const armGeo = new THREE.CapsuleGeometry(0.065, 0.42, 4, 6);
-  const lArm = new THREE.Mesh(armGeo, suitMat);
-  lArm.position.set(-0.29, 1.08, 0);
-  lArm.rotation.z = 0.22;
-  group.add(lArm);
+  // Arms — pivoted at the shoulder so they swing naturally, not from the middle
+  const armGeo = new THREE.CapsuleGeometry(0.065, 0.42, 6, 10);
 
-  const rArm = lArm.clone();
-  rArm.position.set(0.29, 1.08, 0);
-  rArm.rotation.z = -0.22;
-  group.add(rArm);
+  const lArm = new THREE.Group();
+  lArm.position.set(-0.29, 0.44, 0);
+  const lArmMesh = new THREE.Mesh(armGeo, suitMat);
+  lArmMesh.position.y = -0.21;
+  lArm.add(lArmMesh);
+  torsoPivot.add(lArm);
 
-  // Legs
-  const legGeo = new THREE.CapsuleGeometry(0.08, 0.5, 4, 6);
-  const lLeg = new THREE.Mesh(legGeo, suitMat);
-  lLeg.position.set(-0.11, 0.4, 0);
+  const rArm = new THREE.Group();
+  rArm.position.set(0.29, 0.44, 0);
+  const rArmMesh = new THREE.Mesh(armGeo, suitMat);
+  rArmMesh.position.y = -0.21;
+  rArm.add(rArmMesh);
+  torsoPivot.add(rArm);
+
+  // Legs — pivoted at the hip, shoe is nested inside so it swings with the leg
+  const legGeo = new THREE.CapsuleGeometry(0.08, 0.5, 6, 10);
+  const shoeGeo = new THREE.BoxGeometry(0.18, 0.09, 0.28);
+
+  const lLeg = new THREE.Group();
+  lLeg.position.set(-0.11, 0.65, 0);
+  const lLegMesh = new THREE.Mesh(legGeo, suitMat);
+  lLegMesh.position.y = -0.25;
+  lLeg.add(lLegMesh);
+  const lShoe = new THREE.Mesh(shoeGeo, accentMat);
+  lShoe.position.set(0, -0.6, -0.03);
+  lLeg.add(lShoe);
   group.add(lLeg);
 
-  const rLeg = new THREE.Mesh(legGeo, suitMat);
-  rLeg.position.set(0.11, 0.4, 0);
+  const rLeg = new THREE.Group();
+  rLeg.position.set(0.11, 0.65, 0);
+  const rLegMesh = new THREE.Mesh(legGeo, suitMat);
+  rLegMesh.position.y = -0.25;
+  rLeg.add(rLegMesh);
+  const rShoe = new THREE.Mesh(shoeGeo, accentMat);
+  rShoe.position.set(0, -0.6, -0.03);
+  rLeg.add(rShoe);
   group.add(rLeg);
 
-  // Glowing shoes
-  const shoeGeo = new THREE.BoxGeometry(0.18, 0.09, 0.28);
-  const lShoe = new THREE.Mesh(shoeGeo, accentMat);
-  lShoe.position.set(-0.11, 0.05, -0.03);
-  group.add(lShoe);
-
-  const rShoe = new THREE.Mesh(shoeGeo, accentMat);
-  rShoe.position.set(0.11, 0.05, -0.03);
-  group.add(rShoe);
-
-  return group;
+  return { group, torso: torsoPivot, head: headPivot, lArm, rArm, lLeg, rLeg };
 }
 
 // ── Platform meshes ────────────────────────────────────────
@@ -261,8 +289,9 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
 
       const camera = new THREE.PerspectiveCamera(62, W / H, 0.1, 400);
 
-      // Lights
-      scene.add(new THREE.AmbientLight(0x223366, 0.9));
+      // Lights — hemisphere gives a soft sky/ground colour gradient instead
+      // of a flat ambient wash, which reads much less "empty" on screen.
+      scene.add(new THREE.HemisphereLight(0x4466cc, 0x0a0a18, 1.0));
       const sun = new THREE.DirectionalLight(0x88aaff, 1.5);
       sun.position.set(8, 22, 12);
       scene.add(sun);
@@ -286,49 +315,104 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
       ground.position.set(0, -0.65, -70);
       scene.add(ground);
 
+      // Soft contact-shadow blob — a cheap fake shadow that follows each
+      // character's feet, so they don't look like they're floating.
+      const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+      function makeShadow(): THREE.Mesh {
+        const m = new THREE.Mesh(new THREE.CircleGeometry(0.32, 16), shadowMat);
+        m.rotation.x = -Math.PI / 2;
+        scene.add(m);
+        return m;
+      }
+
       // Characters
-      const playerMesh = createCharacter(playerColor);
-      scene.add(playerMesh);
-      const remotePool = new Map<string, THREE.Group>();
+      const playerRig = createCharacter(playerColor);
+      scene.add(playerRig.group);
+      const playerShadow = makeShadow();
+
+      interface PoolEntry { rig: CharacterRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number; }
+      const remotePool = new Map<string, PoolEntry>();
 
       // Camera
       const camPos = new THREE.Vector3(0, 6, 10);
       const camLook = new THREE.Vector3(0, 1.2, -4);
       let legPhase = 0;
+      let idlePhase = 0;
+
+      // Animates one character rig in place: leg/arm swing while moving,
+      // a gentle idle breathing bob while still, and jump squash & stretch.
+      function animateRig(
+        rig: CharacterRig,
+        x: number, y: number, z: number, facing: number,
+        vy: number, onGround: boolean, moving: boolean,
+        phase: number, idle: number,
+        shadow: THREE.Mesh,
+      ) {
+        rig.group.rotation.y = facing;
+
+        const swing = moving ? Math.sin(phase) * 0.55 : 0;
+        rig.lLeg.rotation.x = swing;
+        rig.rLeg.rotation.x = -swing;
+        rig.rArm.rotation.x = swing * 0.6;
+        rig.lArm.rotation.x = -swing * 0.6;
+
+        // Idle breathing bob (only when standing still on the ground)
+        const bob = !moving && onGround ? Math.sin(idle) * 0.025 : 0;
+        rig.torso.position.y = 0.85 + bob;
+        rig.head.position.y = 1.66 + bob * 1.4;
+
+        // Jump squash & stretch — stretch tall going up, squash on landing
+        const stretch = onGround ? 0 : Math.max(-0.16, Math.min(0.16, vy * 0.5));
+        rig.group.scale.set(1 - stretch * 0.5, 1 + stretch, 1 - stretch * 0.5);
+
+        // Slight forward lean while running
+        rig.torso.rotation.x = moving && onGround ? 0.12 : 0;
+
+        rig.group.position.set(x, y, z);
+        shadow.position.set(x, y + 0.015, z);
+        const shadowScale = onGround ? 1 : Math.max(0.35, 1 - Math.abs(vy) * 1.2);
+        shadow.scale.set(shadowScale, shadowScale, shadowScale);
+      }
 
       const animate = () => {
         rafRef.current = requestAnimationFrame(animate);
         const s = physStateRef.current;
 
-        playerMesh.position.set(s.x, s.y, s.z);
-        playerMesh.rotation.y = s.facingAngle;
-
         // First-person hides the local player model (camera sits at its head)
         const mode = cameraModeRef.current;
-        playerMesh.visible = mode !== 'first';
+        playerRig.group.visible = mode !== 'first';
+        playerShadow.visible = mode !== 'first';
 
         const moving = Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01;
-        if (moving) legPhase += 0.18;
-        const swing = moving ? Math.sin(legPhase) * 0.28 : 0;
-        const ch = playerMesh.children;
-        if (ch[8]) ch[8].rotation.x = swing;
-        if (ch[9]) ch[9].rotation.x = -swing;
+        if (moving) legPhase += 0.18; else idlePhase += 0.045;
+        animateRig(playerRig, s.x, s.y, s.z, s.facingAngle, s.vy, s.onGround, moving, legPhase, idlePhase, playerShadow);
 
         const remotes = remotePlayersRef.current;
         const seen = new Set<string>();
         for (const rp of remotes) {
           seen.add(rp.id);
-          if (!remotePool.has(rp.id)) {
-            const m = createCharacter(rp.color);
-            scene.add(m);
-            remotePool.set(rp.id, m);
+          let entry = remotePool.get(rp.id);
+          if (!entry) {
+            entry = { rig: createCharacter(rp.color), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z };
+            scene.add(entry.rig.group);
+            remotePool.set(rp.id, entry);
           }
-          const m = remotePool.get(rp.id)!;
-          m.position.set(rp.x, rp.y, rp.z);
-          m.visible = true;
+          // Infer movement + facing from frame-to-frame position deltas,
+          // since remote players only send us a position, not full physics.
+          const ddx = rp.x - entry.lastX;
+          const ddz = rp.z - entry.lastZ;
+          const dist = Math.sqrt(ddx * ddx + ddz * ddz);
+          const rMoving = dist > 0.003;
+          if (rMoving) entry.legPhase += 0.18;
+          const rFacing = rMoving ? Math.atan2(ddx, ddz) : entry.rig.group.rotation.y;
+          animateRig(entry.rig, rp.x, rp.y, rp.z, rFacing, 0, true, rMoving, entry.legPhase, 0, entry.shadow);
+          entry.rig.group.visible = true;
+          entry.shadow.visible = true;
+          entry.lastX = rp.x;
+          entry.lastZ = rp.z;
         }
-        for (const [id, m] of remotePool) {
-          if (!seen.has(id)) m.visible = false;
+        for (const [id, entry] of remotePool) {
+          if (!seen.has(id)) { entry.rig.group.visible = false; entry.shadow.visible = false; }
         }
 
         // Free-look drag state — yaw turns left/right, pitch tilts up/down.
