@@ -8,6 +8,12 @@ import { GLView } from 'expo-gl';
 import * as THREE from 'three';
 import { PLATFORMS, PhysState3D } from '@/services/game3DPhysics';
 
+// Three common camera perspectives:
+//  'third'  — current default: behind & above the player (chase cam)
+//  'first'  — first-person, from the player's eyes looking forward
+//  'top'    — top-down bird's-eye view, straight above the player
+export type CameraMode = 'third' | 'first' | 'top';
+
 export interface RemotePlayer3D {
   id: string;
   x: number;
@@ -21,6 +27,7 @@ interface Props {
   physStateRef: React.MutableRefObject<PhysState3D>;
   playerColor: string;
   remotePlayersRef: React.MutableRefObject<RemotePlayer3D[]>;
+  cameraModeRef: React.MutableRefObject<CameraMode>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -231,7 +238,7 @@ function WebPlaceholder() {
 }
 
 // ── Native 3D renderer (hooks always called) ────────────────
-function NativeRenderer({ physStateRef, playerColor, remotePlayersRef }: Props) {
+function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraModeRef }: Props) {
   const rafRef = useRef<number>(0);
 
   const onContextCreate = useCallback(
@@ -291,6 +298,10 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef }: Props) 
         playerMesh.position.set(s.x, s.y, s.z);
         playerMesh.rotation.y = s.facingAngle;
 
+        // First-person hides the local player model (camera sits at its head)
+        const mode = cameraModeRef.current;
+        playerMesh.visible = mode !== 'first';
+
         const moving = Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01;
         if (moving) legPhase += 0.18;
         const swing = moving ? Math.sin(legPhase) * 0.28 : 0;
@@ -315,8 +326,32 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef }: Props) 
           if (!seen.has(id)) m.visible = false;
         }
 
-        camPos.lerp(new THREE.Vector3(s.x, s.y + 5.8, s.z + 10), 0.07);
-        camLook.lerp(new THREE.Vector3(s.x, s.y + 1, s.z - 5), 0.07);
+        // Forward direction implied by facingAngle (matches the formula
+        // used in game3DPhysics.ts: facingAngle = atan2(nx, nz))
+        const fdx = Math.sin(s.facingAngle);
+        const fdz = Math.cos(s.facingAngle);
+
+        let targetPos: THREE.Vector3;
+        let targetLook: THREE.Vector3;
+        let lerpSpeed = 0.07;
+
+        if (mode === 'first') {
+          // Eyes-level, looking in the direction the player is facing
+          targetPos = new THREE.Vector3(s.x, s.y + 1.6, s.z);
+          targetLook = new THREE.Vector3(s.x + fdx * 5, s.y + 1.6, s.z + fdz * 5);
+          lerpSpeed = 0.35; // snappier — first person shouldn't feel laggy
+        } else if (mode === 'top') {
+          // Straight overhead, small Z nudge avoids a degenerate lookAt
+          targetPos = new THREE.Vector3(s.x, s.y + 20, s.z + 0.01);
+          targetLook = new THREE.Vector3(s.x, s.y, s.z);
+        } else {
+          // 'third' — default chase camera, behind & above the player
+          targetPos = new THREE.Vector3(s.x, s.y + 5.8, s.z + 10);
+          targetLook = new THREE.Vector3(s.x, s.y + 1, s.z - 5);
+        }
+
+        camPos.lerp(targetPos, lerpSpeed);
+        camLook.lerp(targetLook, lerpSpeed);
         camera.position.copy(camPos);
         camera.lookAt(camLook);
 
