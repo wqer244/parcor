@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { usePlayer } from '@/context/PlayerContext';
 import { GameControls } from '@/components/GameControls';
 import { VoiceButton } from '@/components/VoiceButton';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { GameRenderer3D, RemotePlayer3D, CameraMode } from '@/components/GameRenderer3D';
 import {
   stepPhysics3D,
@@ -40,6 +41,30 @@ export default function GameScreen() {
   const frameRef = useRef(0);
   const remotePlayersRef = useRef<RemotePlayer3D[]>([]);
   const cameraModeRef = useRef<CameraMode>('third');
+
+  // Free-look drag state (radians), read every frame by GameRenderer3D.
+  // yaw: horizontal turn (unbounded, wraps naturally via sin/cos).
+  // pitch: vertical tilt, clamped so the third-person camera never dips
+  // below the player and first-person look stays within a sane range.
+  const orbitYawRef = useRef(0);
+  const orbitPitchRef = useRef(0.447); // ~25.6° — matches the old fixed chase-cam angle
+  const PITCH_MIN = 0.08;
+  const PITCH_MAX = 1.35;
+  const DRAG_SENSITIVITY = 0.006;
+
+  const lookGesture = React.useMemo(
+    () =>
+      Gesture.Pan()
+        .onChange((e) => {
+          orbitYawRef.current -= e.changeX * DRAG_SENSITIVITY;
+          orbitPitchRef.current = Math.max(
+            PITCH_MIN,
+            Math.min(PITCH_MAX, orbitPitchRef.current + e.changeY * DRAG_SENSITIVITY)
+          );
+        })
+        .runOnJS(true),
+    []
+  );
 
   // Cycle order + display info for the camera-perspective button
   const CAMERA_ORDER: CameraMode[] = ['third', 'first', 'top'];
@@ -142,7 +167,18 @@ export default function GameScreen() {
         playerColor={playerColor}
         remotePlayersRef={remotePlayersRef}
         cameraModeRef={cameraModeRef}
+        orbitYawRef={orbitYawRef}
+        orbitPitchRef={orbitPitchRef}
       />
+
+      {/* ── Free-look drag layer ────────────────────────
+          Sits above the 3D view but below the HUD/buttons (which are
+          rendered after it, so they still receive their own touches
+          first). Dragging anywhere on the open game area rotates the
+          camera — same interaction as Roblox / Minecraft. */}
+      <GestureDetector gesture={lookGesture}>
+        <View style={StyleSheet.absoluteFill} />
+      </GestureDetector>
 
       {/* ── HUD top bar ─────────────────────────────── */}
       <View style={[styles.hud, { top: topPad }]} pointerEvents="box-none">
