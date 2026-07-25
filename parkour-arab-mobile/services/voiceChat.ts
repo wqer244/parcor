@@ -44,8 +44,46 @@ import {
 
 const AGORA_APP_ID = 'af3d133c3cbe403895240eafde8e6d5b';
 
+// ⚠️ TEMPORARY TESTING TOKEN — generated manually from the Agora Console
+// for the channel name below only. It expires ~24h after being generated
+// (created 2026-07-25). This is NOT a production solution: every user
+// needs their own valid token, and it must be generated fresh per session
+// by a backend server (Agora provides a token-generation library for
+// Node/etc. for this). Once real voice chat is confirmed working with
+// this temp token, ask me to help set up a proper token server — don't
+// ship this hardcoded token in a real release.
+const TEMP_TESTING_TOKEN =
+  '007eJxTYIhk7p7vdq1el8ekbr0Q63rPOJnfp04fWezGE7DrY+eu/9YKDIlpximGxsbJxslJqSYGxhaWpkYmBqmJaSmpFqlmKaZJcxRTsxoCGRlYnmxgZmSAQBCfn6EgsSg7v7RIN7EoMUnXOIWBAQCDayL6';
+const TEMP_TESTING_CHANNEL = 'parkour-arab-3d';
+
 let engine: IRtcEngine | null = null;
 let joinedChannel: string | null = null;
+
+// ── Debug status — surfaced on-screen in game.tsx, since there's no way
+//    to see device logs remotely. This is the fastest way to tell WHICH
+//    step is failing (permission / join / token-rejected / etc).
+export type VoiceStatus =
+  | { state: 'idle' }
+  | { state: 'requesting-permission' }
+  | { state: 'permission-denied' }
+  | { state: 'joining' }
+  | { state: 'joined'; remoteCount: number }
+  | { state: 'error'; message: string };
+
+let statusListener: ((s: VoiceStatus) => void) | null = null;
+let lastStatus: VoiceStatus = { state: 'idle' };
+let remoteUids = new Set<number>();
+
+function setStatus(s: VoiceStatus) {
+  lastStatus = s;
+  statusListener?.(s);
+}
+
+export function onVoiceStatusChange(cb: (s: VoiceStatus) => void): () => void {
+  statusListener = cb;
+  cb(lastStatus);
+  return () => { if (statusListener === cb) statusListener = null; };
+}
 
 /** Ask Android for the microphone permission. No-op on iOS (the system
  *  prompt fires automatically the first time Agora touches the mic, driven
@@ -63,7 +101,8 @@ export async function requestMicPermission(): Promise<boolean> {
       }
     );
     return result === PermissionsAndroid.RESULTS.GRANTED;
-  } catch {
+  } catch (err) {
+    setStatus({ state: 'error', message: `permission request threw: ${String(err)}` });
     return false;
   }
 }
@@ -76,6 +115,34 @@ function getEngine(): IRtcEngine {
       channelProfile: ChannelProfileType.ChannelProfileCommunication,
     });
     engine.enableAudio();
+
+    // These fire for EVERY event Agora reports — logging them here means
+    // any join failure (bad App ID, certificate/token mismatch, network
+    // block, etc.) shows up in `adb logcat` even without extra setup, and
+    // also drives the on-screen status badge in game.tsx.
+    engine.registerEventHandler({
+      onJoinChannelSuccess: (_connection, elapsed) => {
+        console.log('[voiceChat] onJoinChannelSuccess, elapsed=', elapsed);
+        setStatus({ state: 'joined', remoteCount: remoteUids.size });
+      },
+      onUserJoined: (_connection, remoteUid) => {
+        console.log('[voiceChat] remote user joined:', remoteUid);
+        remoteUids.add(remoteUid);
+        setStatus({ state: 'joined', remoteCount: remoteUids.size });
+      },
+      onUserOffline: (_connection, remoteUid) => {
+        console.log('[voiceChat] remote user left:', remoteUid);
+        remoteUids.delete(remoteUid);
+        setStatus({ state: 'joined', remoteCount: remoteUids.size });
+      },
+      onError: (err, msg) => {
+        console.warn('[voiceChat] Agora onError:', err, msg);
+        setStatus({ state: 'error', message: `code ${err}: ${msg}` });
+      },
+      onConnectionStateChanged: (_connection, state, reason) => {
+        console.log('[voiceChat] connection state:', state, 'reason:', reason);
+      },
+    });
   }
   return engine;
 }
@@ -84,20 +151,37 @@ function getEngine(): IRtcEngine {
  *  same `channelName` hears each other automatically — no server-side
  *  audio routing needed, Agora's network handles it. */
 export async function joinVoiceChannel(channelName: string, uid: number): Promise<boolean> {
+  setStatus({ state: 'requesting-permission' });
   const granted = await requestMicPermission();
-  if (!granted) return false;
+  if (!granted) {
+    setStatus({ state: 'permission-denied' });
+    return false;
+  }
 
   try {
+    setStatus({ state: 'joining' });
+    remoteUids = new Set();
     const e = getEngine();
     if (joinedChannel === channelName) return true;
     if (joinedChannel) e.leaveChannel();
 
-    e.joinChannel('', channelName, uid, {
+    // ⚠️ Empty token ('') only works if this Agora project's "App
+    // Certificate" is DISABLED (Testing Mode) in the Agora Console. If it's
+    // enabled, this join is silently rejected — nobody connects, so no
+    // audio flows in either direction, on any device. That symmetric
+    // total-silence symptom is the #1 sign this is the actual cause.
+    // Use the temp testing token ONLY for the exact channel it was
+    // generated for; any other channel name still tries token-less join
+    // (which will keep failing until Certificate is disabled or a real
+    // token server exists).
+    const token = channelName === TEMP_TESTING_CHANNEL ? TEMP_TESTING_TOKEN : '';
+    e.joinChannel(token, channelName, uid, {
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
     joinedChannel = channelName;
     return true;
   } catch (err) {
+    setStatus({ state: 'error', message: `joinChannel threw: ${String(err)}` });
     console.warn('[voiceChat] joinVoiceChannel failed:', err);
     return false;
   }
@@ -110,6 +194,8 @@ export function leaveVoiceChannel(): void {
     // ignore
   } finally {
     joinedChannel = null;
+    remoteUids = new Set();
+    setStatus({ state: 'idle' });
   }
 }
 
