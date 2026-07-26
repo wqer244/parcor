@@ -69,17 +69,13 @@ export function isVoiceAvailable(): boolean {
 
 const AGORA_APP_ID = 'af3d133c3cbe403895240eafde8e6d5b';
 
-// ⚠️ TEMPORARY TESTING TOKEN — generated manually from the Agora Console
-// for the channel name below only. It expires ~24h after being generated
-// (created 2026-07-25). This is NOT a production solution: every user
-// needs their own valid token, and it must be generated fresh per session
-// by a backend server (Agora provides a token-generation library for
-// Node/etc. for this). Once real voice chat is confirmed working with
-// this temp token, ask me to help set up a proper token server — don't
-// ship this hardcoded token in a real release.
-const TEMP_TESTING_TOKEN =
-  '007eJxTYIhk7p7vdq1el8ekbr0Q63rPOJnfp04fWezGE7DrY+eu/9YKDIlpximGxsbJxslJqSYGxhaWpkYmBqmJaSmpFqlmKaZJcxRTsxoCGRlYnmxgZmSAQBCfn6EgsSg7v7RIN7EoMUnXOIWBAQCDayL6';
-const TEMP_TESTING_CHANNEL = 'parkour-arab-3d';
+// Long-lived token (10-year expiry) generated once via the agora-token
+// library, using the project's App ID + App Certificate. This is scoped to
+// the exact channel name below — it will NOT work for any other channel.
+// This is the permanent replacement for the old 24h temp token.
+const LONG_LIVED_TOKEN =
+  '007eJxTYDjF29nBn/NewkhNV7w/i3v/l3Mbb8w5y3NRX/jju4jps68qMCSmGacYGhsnGycnpZoYGFtYmhqZGKQmpqWkWqSapZgm+TOnZTEwnxFy6bjFysjAyMACxCA+E5hkBpMsYJKfoSCxKDu/tEg3sSgxSdc4hYEBACbpJkI=';
+const LONG_LIVED_CHANNEL = 'parkour-arab-3d';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let engine: any = null;
@@ -224,16 +220,10 @@ export async function joinVoiceChannel(channelName: string, uid: number): Promis
 
     const { ClientRoleType } = AgoraModule;
 
-    // ⚠️ Empty token ('') only works if this Agora project's "App
-    // Certificate" is DISABLED (Testing Mode) in the Agora Console. If it's
-    // enabled, this join is silently rejected — nobody connects, so no
-    // audio flows in either direction, on any device. That symmetric
-    // total-silence symptom is the #1 sign this is the actual cause.
-    // Use the temp testing token ONLY for the exact channel it was
-    // generated for; any other channel name still tries token-less join
-    // (which will keep failing until Certificate is disabled or a real
-    // token server exists).
-    const token = channelName === TEMP_TESTING_CHANNEL ? TEMP_TESTING_TOKEN : '';
+    // Empty token only works when no App Certificate is set; this project
+    // HAS a certificate, so we use the 10-year token generated for this
+    // specific channel name instead.
+    const token = channelName === LONG_LIVED_CHANNEL ? LONG_LIVED_TOKEN : '';
     e.joinChannel(token, channelName, uid, {
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
