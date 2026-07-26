@@ -7,6 +7,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
 import { PLATFORMS, PhysState3D } from '@/services/game3DPhysics';
+import { Skin, getSkin, DEFAULT_SKIN_ID, CHARACTER_MODEL } from '@/constants/skins';
+import { Asset } from 'expo-asset';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 // Three common camera perspectives:
 //  'third'  — current default: behind & above the player (chase cam)
@@ -20,12 +24,13 @@ export interface RemotePlayer3D {
   y: number;
   z: number;
   color: string;
+  skinId?: string;
   name: string;
 }
 
 interface Props {
   physStateRef: React.MutableRefObject<PhysState3D>;
-  playerColor: string;
+  playerSkin: Skin;
   remotePlayersRef: React.MutableRefObject<RemotePlayer3D[]>;
   cameraModeRef: React.MutableRefObject<CameraMode>;
   // Free-look drag state (radians). yaw = horizontal turn, pitch = vertical
@@ -46,6 +51,7 @@ function cssHex(css: string): number {
 // moving parts (for animation) — grabbing children by array index was
 // fragile and was actually the reason the walk animation looked broken.
 interface CharacterRig {
+  kind: 'procedural';
   group: THREE.Group;
   torso: THREE.Object3D;
   head: THREE.Object3D;
@@ -55,9 +61,61 @@ interface CharacterRig {
   rLeg: THREE.Object3D;
 }
 
-function createCharacter(colorCss: string): CharacterRig {
+// The GLB-based rig (loaded from assets/models/character.glb). It has its
+// own internal skeleton + animation clip, so unlike CharacterRig we don't
+// puppeteer individual limbs — we just position/rotate the group and let
+// the AnimationMixer drive the idle animation every frame.
+interface ModelRig {
+  kind: 'model';
+  group: THREE.Group;
+  mixer: THREE.AnimationMixer;
+}
+
+type AnyRig = CharacterRig | ModelRig;
+
+// ── GLB model loading ────────────────────────────────────
+// Loaded once and cached; every character using the model skin gets its
+// own SkeletonUtils.clone() (a real GLTFLoader re-parse per instance is
+// unnecessary and slow). Textures were stripped at build time (see
+// constants/skins.ts) so there's no image decoding to worry about on
+// native — this is plain geometry + a skinned skeleton + flat colors.
+interface LoadedModel { scene: THREE.Group; animations: THREE.AnimationClip[] }
+let cachedModelPromise: Promise<LoadedModel> | null = null;
+
+function loadCharacterModel(): Promise<LoadedModel> {
+  if (!cachedModelPromise) {
+    cachedModelPromise = (async () => {
+      const asset = Asset.fromModule(CHARACTER_MODEL);
+      await asset.downloadAsync();
+      const uri = asset.localUri ?? asset.uri;
+      const res = await fetch(uri);
+      const buffer = await res.arrayBuffer();
+      const loader = new GLTFLoader();
+      return new Promise<LoadedModel>((resolve, reject) => {
+        loader.parse(
+          buffer,
+          '',
+          (gltf) => resolve({ scene: gltf.scene, animations: gltf.animations }),
+          (err) => reject(err),
+        );
+      });
+    })();
+  }
+  return cachedModelPromise;
+}
+
+function createModelRig(base: LoadedModel): ModelRig {
+  const clone = SkeletonUtils.clone(base.scene) as THREE.Group;
+  const mixer = new THREE.AnimationMixer(clone);
+  if (base.animations[0]) {
+    mixer.clipAction(base.animations[0]).play();
+  }
+  return { kind: 'model', group: clone, mixer };
+}
+
+function createCharacter(skin: Skin): CharacterRig {
   const group = new THREE.Group();
-  const accentHex = cssHex(colorCss);
+  const accentHex = cssHex(skin.accent);
 
   const accentMat = new THREE.MeshStandardMaterial({
     color: accentHex,
@@ -67,13 +125,23 @@ function createCharacter(colorCss: string): CharacterRig {
     roughness: 0.05,
   });
   const suitMat = new THREE.MeshStandardMaterial({
-    color: 0x0b0b1f,
+    color: cssHex(skin.suit),
     metalness: 0.7,
     roughness: 0.35,
   });
+  const pantsMat = new THREE.MeshStandardMaterial({
+    color: cssHex(skin.pants),
+    metalness: 0.6,
+    roughness: 0.4,
+  });
   const skinMat = new THREE.MeshStandardMaterial({
-    color: 0xd8956a,
+    color: cssHex(skin.skin),
     roughness: 0.75,
+    metalness: 0.0,
+  });
+  const hairMat = new THREE.MeshStandardMaterial({
+    color: cssHex(skin.hair),
+    roughness: 0.55,
     metalness: 0.0,
   });
 
@@ -84,6 +152,15 @@ function createCharacter(colorCss: string): CharacterRig {
 
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.23, 20, 16), skinMat);
   headPivot.add(head);
+
+  // Hair — a slightly-larger offset sphere cap sitting on the crown, cheap
+  // but reads clearly as a hairstyle silhouette at gameplay distance.
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.235, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.62),
+    hairMat,
+  );
+  hair.position.set(0, 0.05, 0.01);
+  headPivot.add(hair);
 
   // Visor (glowing front half)
   const visorGeo = new THREE.SphereGeometry(0.15, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
@@ -134,7 +211,7 @@ function createCharacter(colorCss: string): CharacterRig {
 
   const lLeg = new THREE.Group();
   lLeg.position.set(-0.11, 0.65, 0);
-  const lLegMesh = new THREE.Mesh(legGeo, suitMat);
+  const lLegMesh = new THREE.Mesh(legGeo, pantsMat);
   lLegMesh.position.y = -0.25;
   lLeg.add(lLegMesh);
   const lShoe = new THREE.Mesh(shoeGeo, accentMat);
@@ -144,7 +221,7 @@ function createCharacter(colorCss: string): CharacterRig {
 
   const rLeg = new THREE.Group();
   rLeg.position.set(0.11, 0.65, 0);
-  const rLegMesh = new THREE.Mesh(legGeo, suitMat);
+  const rLegMesh = new THREE.Mesh(legGeo, pantsMat);
   rLegMesh.position.y = -0.25;
   rLeg.add(rLegMesh);
   const rShoe = new THREE.Mesh(shoeGeo, accentMat);
@@ -152,7 +229,7 @@ function createCharacter(colorCss: string): CharacterRig {
   rLeg.add(rShoe);
   group.add(rLeg);
 
-  return { group, torso: torsoPivot, head: headPivot, lArm, rArm, lLeg, rLeg };
+  return { kind: 'procedural', group, torso: torsoPivot, head: headPivot, lArm, rArm, lLeg, rLeg };
 }
 
 // ── Platform meshes ────────────────────────────────────────
@@ -271,7 +348,7 @@ function WebPlaceholder() {
 }
 
 // ── Native 3D renderer (hooks always called) ────────────────
-function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef }: Props) {
+function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef }: Props) {
   const rafRef = useRef<number>(0);
 
   const onContextCreate = useCallback(
@@ -326,11 +403,24 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
       }
 
       // Characters
-      const playerRig = createCharacter(playerColor);
+      let playerRig: AnyRig = createCharacter(playerSkin);
       scene.add(playerRig.group);
       const playerShadow = makeShadow();
 
-      interface PoolEntry { rig: CharacterRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number; }
+      if (playerSkin.isModel) {
+        loadCharacterModel()
+          .then((base) => {
+            scene.remove(playerRig.group);
+            playerRig = createModelRig(base);
+            scene.add(playerRig.group);
+          })
+          .catch(() => {
+            // Load failed (e.g. offline) — keep the procedural fallback
+            // rig already on screen, colored to match this skin.
+          });
+      }
+
+      interface PoolEntry { rig: AnyRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number; skinId: string; loading: boolean; }
       const remotePool = new Map<string, PoolEntry>();
 
       // Camera
@@ -342,13 +432,27 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
       // Animates one character rig in place: leg/arm swing while moving,
       // a gentle idle breathing bob while still, and jump squash & stretch.
       function animateRig(
-        rig: CharacterRig,
+        rig: AnyRig,
         x: number, y: number, z: number, facing: number,
         vy: number, onGround: boolean, moving: boolean,
         phase: number, idle: number,
         shadow: THREE.Mesh,
       ) {
         rig.group.rotation.y = facing;
+        rig.group.position.set(x, y, z);
+        shadow.position.set(x, y + 0.015, z);
+        const shadowScale = onGround ? 1 : Math.max(0.35, 1 - Math.abs(vy) * 1.2);
+        shadow.scale.set(shadowScale, shadowScale, shadowScale);
+
+        if (rig.kind === 'model') {
+          // The GLB's own AnimationMixer drives its idle clip (updated
+          // once per frame in the main loop below) — no limb puppeteering
+          // needed here, just world position/rotation and a jump
+          // squash & stretch to match the procedural rig's feel.
+          const stretch = onGround ? 0 : Math.max(-0.16, Math.min(0.16, vy * 0.5));
+          rig.group.scale.set(1 - stretch * 0.5, 1 + stretch, 1 - stretch * 0.5);
+          return;
+        }
 
         const swing = moving ? Math.sin(phase) * 0.55 : 0;
         rig.lLeg.rotation.x = swing;
@@ -367,16 +471,30 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
 
         // Slight forward lean while running
         rig.torso.rotation.x = moving && onGround ? 0.12 : 0;
+      }
 
-        rig.group.position.set(x, y, z);
-        shadow.position.set(x, y + 0.015, z);
-        const shadowScale = onGround ? 1 : Math.max(0.35, 1 - Math.abs(vy) * 1.2);
-        shadow.scale.set(shadowScale, shadowScale, shadowScale);
+      const clock = new THREE.Clock();
+
+      // Swaps a pool entry's procedural fallback rig for the loaded GLB
+      // model once it's ready. Shared by the "new remote" and "remote
+      // switched skin" paths below so the loading logic only lives once.
+      function upgradeToModelWhenReady(entry: PoolEntry) {
+        if (entry.loading) return;
+        entry.loading = true;
+        loadCharacterModel()
+          .then((base) => {
+            entry.loading = false;
+            scene.remove(entry.rig.group);
+            entry.rig = createModelRig(base);
+            scene.add(entry.rig.group);
+          })
+          .catch(() => { entry.loading = false; });
       }
 
       const animate = () => {
         rafRef.current = requestAnimationFrame(animate);
         const s = physStateRef.current;
+        const delta = clock.getDelta();
 
         // First-person hides the local player model (camera sits at its head)
         const mode = cameraModeRef.current;
@@ -386,16 +504,27 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
         const moving = Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01;
         if (moving) legPhase += 0.18; else idlePhase += 0.045;
         animateRig(playerRig, s.x, s.y, s.z, s.facingAngle, s.vy, s.onGround, moving, legPhase, idlePhase, playerShadow);
+        if (playerRig.kind === 'model') playerRig.mixer.update(delta);
 
         const remotes = remotePlayersRef.current;
         const seen = new Set<string>();
         for (const rp of remotes) {
           seen.add(rp.id);
+          const rpSkinId = rp.skinId ?? DEFAULT_SKIN_ID;
+          const rpSkin = getSkin(rpSkinId);
           let entry = remotePool.get(rp.id);
           if (!entry) {
-            entry = { rig: createCharacter(rp.color), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z };
+            entry = { rig: createCharacter(rpSkin), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z, skinId: rpSkinId, loading: false };
             scene.add(entry.rig.group);
             remotePool.set(rp.id, entry);
+            if (rpSkin.isModel) upgradeToModelWhenReady(entry);
+          } else if (entry.skinId !== rpSkinId) {
+            // Remote player changed skin — swap the rig in place.
+            scene.remove(entry.rig.group);
+            entry.rig = createCharacter(rpSkin);
+            entry.skinId = rpSkinId;
+            scene.add(entry.rig.group);
+            if (rpSkin.isModel) upgradeToModelWhenReady(entry);
           }
           // Infer movement + facing from frame-to-frame position deltas,
           // since remote players only send us a position, not full physics.
@@ -406,6 +535,7 @@ function NativeRenderer({ physStateRef, playerColor, remotePlayersRef, cameraMod
           if (rMoving) entry.legPhase += 0.18;
           const rFacing = rMoving ? Math.atan2(ddx, ddz) : entry.rig.group.rotation.y;
           animateRig(entry.rig, rp.x, rp.y, rp.z, rFacing, 0, true, rMoving, entry.legPhase, 0, entry.shadow);
+          if (entry.rig.kind === 'model') entry.rig.mixer.update(delta);
           entry.rig.group.visible = true;
           entry.shadow.visible = true;
           entry.lastX = rp.x;
