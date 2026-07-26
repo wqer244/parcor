@@ -1,11 +1,15 @@
 // ────────────────────────────────────────────────────────────────────────────
-// Local Expo config plugin — restricts the Android build to arm64-v8a only.
+// Local Expo config plugin — controls which Android CPU architectures the
+// native libraries (Agora's voice engine, expo-gl/three.js, Reanimated,
+// Hermes, etc.) get built for.
 //
-// Why: without this, EAS builds a "universal" APK bundling native code for
-// FOUR processor architectures (arm64-v8a, armeabi-v7a, x86, x86_64), even
-// though 99% of real Android phones only need arm64-v8a. Every native
-// module (Agora's voice engine especially, but also Reanimated/Worklets'
-// CMake libs, Hermes, expo-gl, etc.) gets built and packaged 4x.
+// By default React Native/EAS builds a "universal" APK bundling native code
+// for FOUR processor architectures (arm64-v8a, armeabi-v7a, x86, x86_64).
+// That's the safe, crash-proof default and is what this plugin currently
+// sets. An earlier version of this file restricted it to arm64-v8a only to
+// shrink the APK — but that meant the app hard-crashed (closed completely,
+// no JS error screen) on any device/emulator that isn't arm64-v8a, because
+// the native .so files those modules need simply weren't in the build.
 //
 // v2 — the previous version of this file edited android/app/build.gradle's
 // `defaultConfig { ndk { abiFilters ... } }` block directly. That DIDN'T
@@ -21,9 +25,19 @@
 // ────────────────────────────────────────────────────────────────────────────
 const { withGradleProperties } = require('@expo/config-plugins');
 
-const ARCHITECTURES = ['arm64-v8a'];
-// If you ever need 32-bit device support too, use:
-// const ARCHITECTURES = ['arm64-v8a', 'armeabi-v7a'];
+// v3 — was 'arm64-v8a' only. That caused a hard native crash (app closes
+// completely, no JS error screen — UnsatisfiedLinkError under the hood)
+// the instant the game screen tried to load a native module (Agora's
+// voice engine, expo-gl/three.js's GL bindings, Reanimated) on ANY device
+// or emulator that isn't arm64-v8a specifically:
+//   - Android Studio emulators default to x86_64
+//   - many budget/older phones are still 32-bit (armeabi-v7a)
+// Building all four common architectures avoids that crash everywhere,
+// at the cost of a larger APK. Once you've confirmed exactly which
+// architecture(s) your real test/release devices use, you can trim this
+// back down — just make sure it always includes whatever you're
+// currently testing on.
+const ARCHITECTURES = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'];
 
 function withAbiFilters(config) {
   return withGradleProperties(config, (config) => {
