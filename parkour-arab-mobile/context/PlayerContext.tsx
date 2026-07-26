@@ -17,6 +17,7 @@ import {
   off,
 } from '@/services/firebase';
 import { PLAYER_COLORS } from '@/services/game3DPhysics';
+import { DEFAULT_SKIN_ID, getSkin } from '@/constants/skins';
 
 export interface RemotePlayer {
   id: string;
@@ -27,6 +28,7 @@ export interface RemotePlayer {
   vy: number;
   vz: number;
   color: string;
+  skinId?: string;
   name: string;
   serverId: string;
   lastUpdate: number;
@@ -35,12 +37,14 @@ export interface RemotePlayer {
 interface PlayerContextValue {
   playerId: string;
   playerColor: string;
+  playerSkinId: string;
   playerName: string;
   remotePlayers: RemotePlayer[];
   isReady: boolean;
   joinServer: (serverId: string) => Promise<void>;
   leaveServer: () => Promise<void>;
   syncPosition: (x: number, y: number, z: number, vx: number, vy: number, vz: number) => void;
+  setPlayerSkin: (skinId: string) => Promise<void>;
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -48,6 +52,7 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [playerId, setPlayerId] = useState('');
   const [playerColor, setPlayerColor] = useState('#00CED1');
+  const [playerSkinId, setPlayerSkinId] = useState(DEFAULT_SKIN_ID);
   const [playerName, setPlayerName] = useState('');
   const [remotePlayers, setRemotePlayers] = useState<RemotePlayer[]>([]);
   const [isReady, setIsReady] = useState(false);
@@ -55,14 +60,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const currentServerRef = useRef<string | null>(null);
   const syncThrottleRef = useRef(0);
   const playerColorRef = useRef(playerColor);
+  const playerSkinIdRef = useRef(playerSkinId);
   const playerNameRef = useRef(playerName);
   const playerIdRef = useRef('');
 
   useEffect(() => {
     playerColorRef.current = playerColor;
+    playerSkinIdRef.current = playerSkinId;
     playerNameRef.current = playerName;
     playerIdRef.current = playerId;
-  }, [playerColor, playerName, playerId]);
+  }, [playerColor, playerSkinId, playerName, playerId]);
 
   useEffect(() => {
     async function initPlayer() {
@@ -83,8 +90,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           name = 'لاعب_' + id.slice(-4).toUpperCase();
           await AsyncStorage.setItem('parcour_player_name', name);
         }
+        const storedSkinId = await AsyncStorage.getItem('parcour_skin_id');
+        const skinId = storedSkinId ?? DEFAULT_SKIN_ID;
+
         setPlayerId(id);
-        setPlayerColor(PLAYER_COLORS[colorIdx % PLAYER_COLORS.length]);
+        setPlayerSkinId(skinId);
+        setPlayerColor(getSkin(skinId).accent);
         setPlayerName(name);
         setIsReady(true);
       } catch {
@@ -94,6 +105,24 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
     }
     initPlayer();
+  }, []);
+
+  const setPlayerSkin = useCallback(async (skinId: string) => {
+    const accent = getSkin(skinId).accent;
+    setPlayerSkinId(skinId);
+    setPlayerColor(accent);
+    playerSkinIdRef.current = skinId;
+    playerColorRef.current = accent;
+    try {
+      await AsyncStorage.setItem('parcour_skin_id', skinId);
+    } catch { /* ignore */ }
+    // If already in a server, push the new skin immediately so remote
+    // players see the change without waiting for the next position sync.
+    const id = playerIdRef.current;
+    if (id && currentServerRef.current) {
+      set(ref(db, `game3d/players/${id}/skinId`), skinId).catch(() => {});
+      set(ref(db, `game3d/players/${id}/color`), accent).catch(() => {});
+    }
   }, []);
 
   const joinServer = useCallback(async (serverId: string) => {
@@ -107,6 +136,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         x: 0, y: 0.5, z: 0,
         vx: 0, vy: 0, vz: 0,
         color: playerColorRef.current,
+        skinId: playerSkinIdRef.current,
         name: playerNameRef.current || 'لاعب',
         serverId,
         lastUpdate: Date.now(),
@@ -153,6 +183,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         vy: Math.round(vy * 10) / 10,
         vz: Math.round(vz * 10) / 10,
         color: playerColorRef.current,
+        skinId: playerSkinIdRef.current,
         name: playerNameRef.current || 'لاعب',
         serverId: currentServerRef.current,
         lastUpdate: Date.now(),
@@ -166,12 +197,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       value={{
         playerId,
         playerColor,
+        playerSkinId,
         playerName,
         remotePlayers,
         isReady,
         joinServer,
         leaveServer,
         syncPosition,
+        setPlayerSkin,
       }}
     >
       {children}
