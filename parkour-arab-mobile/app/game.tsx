@@ -27,6 +27,7 @@ import {
   Input3D,
   FINISH_DISTANCE,
 } from '@/services/game3DPhysics';
+import { SKINS, getSkin } from '@/constants/skins';
 
 function makeInitState(): PhysState3D {
   return { x: 0, y: 0.5, z: 0, vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0, finished: false };
@@ -34,8 +35,9 @@ function makeInitState(): PhysState3D {
 
 export default function GameScreen() {
   const insets = useSafeAreaInsets();
-  const { playerColor, playerName, remotePlayers, joinServer, leaveServer, syncPosition } =
+  const { playerColor, playerSkinId, playerName, remotePlayers, joinServer, leaveServer, syncPosition, setPlayerSkin } =
     usePlayer();
+  const playerSkin = getSkin(playerSkinId);
 
   // Refs — updated every frame without re-render
   const physRef = useRef<PhysState3D>(makeInitState());
@@ -81,6 +83,7 @@ export default function GameScreen() {
   const [cameraMode, setCameraMode] = useState<CameraMode>('third');
   const [hasFinished, setHasFinished] = useState(false);
   const [onlinePlayers, setOnlinePlayers] = useState(1);
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [, forceUpdate] = useState(0);
 
   // Keep remote players ref in sync
@@ -91,6 +94,7 @@ export default function GameScreen() {
       y: rp.y,
       z: rp.z ?? 0,
       color: rp.color,
+      skinId: rp.skinId,
       name: rp.name,
     }));
     setOnlinePlayers(remotePlayers.length + 1);
@@ -180,7 +184,7 @@ export default function GameScreen() {
       {/* ── 3D View ─────────────────────────────────── */}
       <GameRenderer3D
         physStateRef={physRef}
-        playerColor={playerColor}
+        playerSkin={playerSkin}
         remotePlayersRef={remotePlayersRef}
         cameraModeRef={cameraModeRef}
         orbitYawRef={orbitYawRef}
@@ -217,6 +221,10 @@ export default function GameScreen() {
 
         <Pressable style={styles.camBtn} onPress={cycleCamera}>
           <Ionicons name={CAMERA_INFO[cameraMode].icon} size={20} color="#00ffcc" />
+        </Pressable>
+
+        <Pressable style={styles.camBtn} onPress={() => setSettingsVisible(true)}>
+          <Ionicons name="settings-sharp" size={19} color="#00ffcc" />
         </Pressable>
 
         <VoiceButton isMuted={isMuted} onToggle={() => setIsMuted((m) => !m)} />
@@ -258,6 +266,52 @@ export default function GameScreen() {
               <Pressable style={styles.exitBtn} onPress={() => router.back()}>
                 <Text style={styles.exitTxt}>خروج</Text>
               </Pressable>
+            </View>
+          </LinearGradient>
+        </View>
+      </Modal>
+
+      {/* ── Settings / Skin Picker Modal ─────────────────── */}
+      <Modal visible={settingsVisible} transparent animationType="fade" onRequestClose={() => setSettingsVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <LinearGradient
+            colors={['#06060f', '#0d0d22', '#06060f']}
+            style={styles.settingsCard}
+          >
+            <View style={styles.settingsHeader}>
+              <Text style={styles.settingsTitle}>الإعدادات</Text>
+              <Pressable style={styles.closeBtn} onPress={() => setSettingsVisible(false)}>
+                <Ionicons name="close" size={20} color="#00ffcc" />
+              </Pressable>
+            </View>
+
+            <Text style={styles.settingsSubTitle}>اختر السكن</Text>
+
+            <View style={styles.skinGrid}>
+              {SKINS.map((skin) => {
+                const selected = skin.id === playerSkinId;
+                return (
+                  <Pressable
+                    key={skin.id}
+                    style={[styles.skinCard, selected && styles.skinCardSelected]}
+                    onPress={() => setPlayerSkin(skin.id)}
+                  >
+                    <View style={styles.skinPreview}>
+                      <View style={[styles.skinPreviewHair, { backgroundColor: skin.hair }]} />
+                      <View style={[styles.skinPreviewHead, { backgroundColor: skin.skin }]} />
+                      <View style={[styles.skinPreviewBody, { backgroundColor: skin.suit }]} />
+                      <View style={[styles.skinPreviewLegs, { backgroundColor: skin.pants }]} />
+                      <View style={[styles.skinPreviewAccent, { backgroundColor: skin.accent }]} />
+                    </View>
+                    <Text style={styles.skinName} numberOfLines={1}>{skin.name}</Text>
+                    {selected && (
+                      <View style={styles.skinCheckBadge}>
+                        <Ionicons name="checkmark" size={12} color="#06060f" />
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })}
             </View>
           </LinearGradient>
         </View>
@@ -407,4 +461,116 @@ const styles = StyleSheet.create({
     borderColor: '#ffd70066',
   },
   exitTxt: { color: '#ffd700', fontWeight: '700', fontSize: 14 },
+  // ── Settings / skin picker modal
+  settingsCard: {
+    width: '86%',
+    maxWidth: 420,
+    maxHeight: '82%',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,255,204,0.25)',
+  },
+  settingsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  settingsTitle: {
+    color: '#00ffcc',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,255,204,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsSubTitle: {
+    color: 'rgba(0,255,204,0.7)',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 16,
+    marginBottom: 10,
+  },
+  skinGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    justifyContent: 'flex-start',
+  },
+  skinCard: {
+    width: 84,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  skinCardSelected: {
+    borderColor: '#00ffcc',
+    backgroundColor: 'rgba(0,255,204,0.1)',
+  },
+  skinPreview: {
+    width: 40,
+    height: 56,
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  skinPreviewHair: {
+    position: 'absolute',
+    top: 0,
+    width: 16,
+    height: 8,
+    borderRadius: 4,
+  },
+  skinPreviewHead: {
+    position: 'absolute',
+    top: 4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+  },
+  skinPreviewBody: {
+    position: 'absolute',
+    top: 20,
+    width: 26,
+    height: 20,
+    borderRadius: 6,
+  },
+  skinPreviewLegs: {
+    position: 'absolute',
+    top: 38,
+    width: 22,
+    height: 18,
+    borderRadius: 5,
+  },
+  skinPreviewAccent: {
+    position: 'absolute',
+    top: 20,
+    width: 6,
+    height: 20,
+    borderRadius: 3,
+  },
+  skinName: {
+    color: '#e8f8f5',
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  skinCheckBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#00ffcc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });
