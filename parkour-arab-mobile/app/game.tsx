@@ -18,6 +18,7 @@ import { usePlayer } from '@/context/PlayerContext';
 import { joinVoiceChannel, leaveVoiceChannel, setVoiceMuted, destroyVoiceEngine } from '@/services/voiceChat';
 import { GameControls } from '@/components/GameControls';
 import { VoiceButton } from '@/components/VoiceButton';
+import { MiniMap } from '@/components/MiniMap';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { GameRenderer3D, RemotePlayer3D, CameraMode } from '@/components/GameRenderer3D';
 import {
@@ -226,6 +227,11 @@ export default function GameScreen() {
         <Text style={styles.camLabelText}>{CAMERA_INFO[cameraMode].label}</Text>
       </View>
 
+      {/* ── Minimap — shows every player's live position ─────────── */}
+      <View style={[styles.miniMapWrap, { top: topPad + 46 }]} pointerEvents="none">
+        <MiniMap physStateRef={physRef} remotePlayersRef={remotePlayersRef} playerColor={playerColor} />
+      </View>
+
       {/* ── Controls ────────────────────────────────── */}
       <GameControls
         onForwardStart={startForward}  onForwardEnd={stopForward}
@@ -309,6 +315,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 8,
     overflow: 'hidden',
+  },
+  miniMapWrap: {
+    position: 'absolute',
+    left: 14,
   },
   hudCenter: {
     flex: 1,
