@@ -27,8 +27,10 @@ import {
   PhysState3D,
   Input3D,
   FINISH_DISTANCE,
+  WEAPON_DEFS,
 } from '@/services/game3DPhysics';
 import { SKINS, getSkin } from '@/constants/skins';
+import { usePvP } from '@/hooks/usePvP';
 
 function makeInitState(): PhysState3D {
   return { x: 0, y: 0.5, z: 0, vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0, finished: false };
@@ -36,9 +38,18 @@ function makeInitState(): PhysState3D {
 
 export default function GameScreen() {
   const insets = useSafeAreaInsets();
-  const { playerColor, playerSkinId, playerName, remotePlayers, joinServer, leaveServer, syncPosition, setPlayerSkin } =
+  const { playerId, playerColor, playerSkinId, playerName, remotePlayers, joinServer, leaveServer, syncPosition, setPlayerSkin, setPlayerWeapon } =
     usePlayer();
   const playerSkin = getSkin(playerSkinId);
+  const pvp = usePvP(playerId);
+
+  // Refs PvP needs to read every frame without triggering re-renders —
+  // kept in sync with the hook's state via the effect below.
+  const weaponTakenAtRef = useRef<Record<string, number>>({});
+  const currentWeaponRef = useRef(pvp.currentWeapon);
+  useEffect(() => { weaponTakenAtRef.current = pvp.weaponTakenAt; }, [pvp.weaponTakenAt]);
+  useEffect(() => { currentWeaponRef.current = pvp.currentWeapon; }, [pvp.currentWeapon]);
+  useEffect(() => { setPlayerWeapon(pvp.currentWeapon); }, [pvp.currentWeapon, setPlayerWeapon]);
 
   // Refs — updated every frame without re-render
   const physRef = useRef<PhysState3D>(makeInitState());
@@ -96,6 +107,7 @@ export default function GameScreen() {
       z: rp.z ?? 0,
       color: rp.color,
       skinId: rp.skinId,
+      weapon: rp.weapon,
       name: rp.name,
     }));
     setOnlinePlayers(remotePlayers.length + 1);
@@ -130,6 +142,13 @@ export default function GameScreen() {
       // Consume single-press jump
       if (inp.jump && next.vy > 0) inp.jump = false;
 
+      // PvP — arena zone tracking + death/respawn
+      pvp.updatePosition(next.x, next.z);
+      const respawn = pvp.consumeRespawn();
+      if (respawn) {
+        physRef.current = { ...physRef.current, x: respawn.x, y: respawn.y, z: respawn.z, vx: 0, vy: 0, vz: 0 };
+      }
+
       // Finish detection
       if (next.finished && !hasFinished) {
         setHasFinished(true);
@@ -162,6 +181,12 @@ export default function GameScreen() {
   const stopRight     = () => { inputRef.current.right    = false; };
   const doJump        = () => { inputRef.current.jump     = true; };
 
+  const doAttack = () => {
+    const s = physRef.current;
+    pvp.attack(s.x, s.z, s.facingAngle, remotePlayersRef.current);
+  };
+  const doPickup = () => { pvp.pickupNearestWeapon(); };
+
   const cycleCamera = () => {
     const nextIdx = (CAMERA_ORDER.indexOf(cameraModeRef.current) + 1) % CAMERA_ORDER.length;
     const next = CAMERA_ORDER[nextIdx];
@@ -190,6 +215,8 @@ export default function GameScreen() {
         cameraModeRef={cameraModeRef}
         orbitYawRef={orbitYawRef}
         orbitPitchRef={orbitPitchRef}
+        weaponTakenAtRef={weaponTakenAtRef}
+        currentWeaponRef={currentWeaponRef}
       />
 
       {/* ── Free-look drag layer ────────────────────────
@@ -240,6 +267,35 @@ export default function GameScreen() {
       <View style={[styles.miniMapWrap, { top: topPad + 46 }]} pointerEvents="none">
         <MiniMap physStateRef={physRef} remotePlayersRef={remotePlayersRef} playerColor={playerColor} />
       </View>
+
+      {/* ── PvP health bar — only visible inside the arena ──────── */}
+      {pvp.inArena && (
+        <View style={[styles.healthWrap, { top: topPad + 46 }]} pointerEvents="none">
+          <View style={styles.healthBarBg}>
+            <View style={[styles.healthBarFill, { width: `${(pvp.health / pvp.maxHealth) * 100}%` as `${number}%` }]} />
+          </View>
+          <Text style={styles.healthTxt}>{Math.round(pvp.health)} / {pvp.maxHealth}</Text>
+          {pvp.currentWeapon && (
+            <Text style={styles.weaponTxt}>🗡 {WEAPON_DEFS[pvp.currentWeapon].name}</Text>
+          )}
+        </View>
+      )}
+
+      {/* ── PvP action buttons — attack always available in the arena,
+          pickup only pops up standing near an available weapon crate ── */}
+      {pvp.inArena && (
+        <View style={styles.pvpBtns} pointerEvents="box-none">
+          {pvp.nearestWeaponId && (
+            <Pressable style={styles.pickupBtn} onPress={doPickup}>
+              <Ionicons name="hand-left" size={18} color="#06060f" />
+              <Text style={styles.pickupBtnTxt}>التقط</Text>
+            </Pressable>
+          )}
+          <Pressable style={styles.attackBtn} onPress={doAttack}>
+            <Ionicons name="flash" size={26} color="#06060f" />
+          </Pressable>
+        </View>
+      )}
 
       {/* ── Controls ────────────────────────────────── */}
       <GameControls
@@ -601,5 +657,68 @@ const styles = StyleSheet.create({
     color: '#06060f',
     fontWeight: '800',
     fontSize: 15,
+  },
+  // ── PvP HUD
+  healthWrap: {
+    position: 'absolute',
+    right: 14,
+    alignItems: 'flex-end',
+  },
+  healthBarBg: {
+    width: 130,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,51,51,0.4)',
+    overflow: 'hidden',
+  },
+  healthBarFill: {
+    height: '100%',
+    backgroundColor: '#ff3333',
+    borderRadius: 6,
+  },
+  healthTxt: {
+    color: '#ff8888',
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  weaponTxt: {
+    color: '#ffd700',
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  pvpBtns: {
+    position: 'absolute',
+    right: 14,
+    bottom: 150,
+    alignItems: 'center',
+    gap: 10,
+  },
+  attackBtn: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: '#ff3333',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#ffaaaa',
+  },
+  pickupBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: '#ffd700',
+  },
+  pickupBtnTxt: {
+    color: '#06060f',
+    fontWeight: '800',
+    fontSize: 12,
   },
 });
