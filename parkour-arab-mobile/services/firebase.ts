@@ -10,6 +10,7 @@ import {
   onDisconnect,
   increment,
   off,
+  push,
 } from 'firebase/database';
 
 const firebaseConfig = {
@@ -38,6 +39,7 @@ export {
   onDisconnect,
   increment,
   off,
+  push,
 };
 
 /** Ensure the "باركور العرب" server exists in the database */
