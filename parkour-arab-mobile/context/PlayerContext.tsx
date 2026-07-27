@@ -16,7 +16,7 @@ import {
   onDisconnect,
   off,
 } from '@/services/firebase';
-import { PLAYER_COLORS } from '@/services/game3DPhysics';
+import { PLAYER_COLORS, WeaponType } from '@/services/game3DPhysics';
 import { DEFAULT_SKIN_ID, getSkin } from '@/constants/skins';
 
 export interface RemotePlayer {
@@ -29,6 +29,7 @@ export interface RemotePlayer {
   vz: number;
   color: string;
   skinId?: string;
+  weapon?: WeaponType | null;
   name: string;
   serverId: string;
   lastUpdate: number;
@@ -45,6 +46,7 @@ interface PlayerContextValue {
   leaveServer: () => Promise<void>;
   syncPosition: (x: number, y: number, z: number, vx: number, vy: number, vz: number) => void;
   setPlayerSkin: (skinId: string) => Promise<void>;
+  setPlayerWeapon: (weapon: WeaponType | null) => void;
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -61,6 +63,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const syncThrottleRef = useRef(0);
   const playerColorRef = useRef(playerColor);
   const playerSkinIdRef = useRef(playerSkinId);
+  const playerWeaponRef = useRef<WeaponType | null>(null);
   const playerNameRef = useRef(playerName);
   const playerIdRef = useRef('');
 
@@ -137,6 +140,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         vx: 0, vy: 0, vz: 0,
         color: playerColorRef.current,
         skinId: playerSkinIdRef.current,
+        weapon: playerWeaponRef.current,
         name: playerNameRef.current || 'لاعب',
         serverId,
         lastUpdate: Date.now(),
@@ -184,6 +188,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         vz: Math.round(vz * 10) / 10,
         color: playerColorRef.current,
         skinId: playerSkinIdRef.current,
+        weapon: playerWeaponRef.current,
         name: playerNameRef.current || 'لاعب',
         serverId: currentServerRef.current,
         lastUpdate: Date.now(),
@@ -191,6 +196,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
+
+  // PvP hands this the currently-held weapon (or null) whenever it
+  // changes. Written eagerly (not throttled like position) so remote
+  // players see a pickup/drop right away instead of waiting up to
+  // ~100ms for the next position tick.
+  const setPlayerWeapon = useCallback((weapon: WeaponType | null) => {
+    playerWeaponRef.current = weapon;
+    const id = playerIdRef.current;
+    if (id && currentServerRef.current) {
+      set(ref(db, `game3d/players/${id}/weapon`), weapon).catch(() => {});
+    }
+  }, []);
 
   return (
     <PlayerContext.Provider
@@ -205,6 +222,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         leaveServer,
         syncPosition,
         setPlayerSkin,
+        setPlayerWeapon,
       }}
     >
       {children}
