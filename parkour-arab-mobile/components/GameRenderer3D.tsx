@@ -6,7 +6,10 @@ import { StyleSheet, Platform, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
-import { PLATFORMS, PhysState3D, WeaponType, WEAPON_DEFS, PVP_WEAPON_SPAWNS, WEAPON_RESPAWN_MS } from '@/services/game3DPhysics';
+import {
+  PLATFORMS, PhysState3D, WeaponType, WEAPON_DEFS, PVP_WEAPON_SPAWNS, WEAPON_RESPAWN_MS,
+  PVP_PILLARS, PVP_WALL_SEGMENTS, TIER_COLORS,
+} from '@/services/game3DPhysics';
 import { Skin, getSkin, DEFAULT_SKIN_ID, CHARACTER_MODEL } from '@/constants/skins';
 import { Asset } from 'expo-asset';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -278,6 +281,135 @@ function buildPlatformMeshes(scene: THREE.Scene) {
         scene.add(pillar);
       }
     }
+
+    // Arena structures (decks, hub, cover, steps) get armor-panel trim —
+    // a recessed dark bevel + four corner rivets/beacons — instead of a
+    // plain glowing cube, so the PvP zone reads as built hardware rather
+    // than parkour geometry re-used as a battlefield.
+    if (p.arena) {
+      const bevelMat = new THREE.MeshStandardMaterial({
+        color: 0x0a0a10, metalness: 0.9, roughness: 0.3,
+      });
+      const bevel = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.max(p.width - 0.3, 0.2), 0.05, Math.max(p.depth - 0.3, 0.2)),
+        bevelMat,
+      );
+      bevel.position.set(p.x, p.y - 0.01, p.z);
+      scene.add(bevel);
+
+      const beaconGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.22, 8);
+      const beaconMat = new THREE.MeshStandardMaterial({
+        color: cssHex(p.glowColor), emissive: cssHex(p.glowColor), emissiveIntensity: 2.5,
+      });
+      const cornerInsetX = Math.max(p.width / 2 - 0.28, 0.1);
+      const cornerInsetZ = Math.max(p.depth / 2 - 0.28, 0.1);
+      for (const cx of [-cornerInsetX, cornerInsetX]) {
+        for (const cz of [-cornerInsetZ, cornerInsetZ]) {
+          const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+          beacon.position.set(p.x + cx, p.y + 0.11, p.z + cz);
+          scene.add(beacon);
+        }
+      }
+    }
+  }
+}
+
+// ── Arena decor — pillars, perimeter walls, entrance gate, floor grid ──
+// Pure set-dressing (no collision). This is what turns the PvP zone from
+// "a lit rectangle with boxes on it" into a coliseum silhouette players
+// can recognize the shape of from across the map.
+function buildArenaDecor(scene: THREE.Scene) {
+  const pillarMat = new THREE.MeshStandardMaterial({
+    color: 0x151022, metalness: 0.85, roughness: 0.3,
+  });
+  const beaconMat = new THREE.MeshStandardMaterial({
+    color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.8,
+  });
+
+  for (const pil of PVP_PILLARS) {
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(pil.radius, pil.radius * 1.25, pil.height, 10),
+      pillarMat,
+    );
+    shaft.position.set(pil.x, pil.height / 2, pil.z);
+    scene.add(shaft);
+
+    // Glowing crown + ring bands so the towers read from a distance
+    const crown = new THREE.Mesh(new THREE.SphereGeometry(pil.radius * 1.4, 12, 10), beaconMat);
+    crown.position.set(pil.x, pil.height + pil.radius * 0.6, pil.z);
+    scene.add(crown);
+
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.2,
+    });
+    for (const t of [0.32, 0.68]) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(pil.radius * 1.15, 0.035, 8, 20),
+        ringMat,
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(pil.x, pil.height * t, pil.z);
+      scene.add(ring);
+    }
+
+    const beaconLight = new THREE.PointLight(0xff3333, 0.9, 14);
+    beaconLight.position.set(pil.x, pil.height + 0.5, pil.z);
+    scene.add(beaconLight);
+  }
+
+  // Perimeter energy walls — dark metal base with a bright top trim line
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: 0x1a0f14, metalness: 0.8, roughness: 0.4,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.6,
+  });
+  for (const w of PVP_WALL_SEGMENTS) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w.width, w.height, w.depth), wallMat);
+    wall.position.set(w.x, w.height / 2, w.z);
+    scene.add(wall);
+
+    const trim = new THREE.Mesh(
+      new THREE.BoxGeometry(w.width + 0.04, 0.06, w.depth + 0.04),
+      trimMat,
+    );
+    trim.position.set(w.x, w.height + 0.03, w.z);
+    scene.add(trim);
+  }
+
+  // Entrance gate — a glowing arch bridging the two gate pillars, marking
+  // the transition from the parkour walkway into the arena proper.
+  const archMat = new THREE.MeshStandardMaterial({
+    color: 0xffb020, emissive: 0xffb020, emissiveIntensity: 1.6,
+  });
+  const arch = new THREE.Mesh(new THREE.TorusGeometry(4.4, 0.09, 8, 24, Math.PI), archMat);
+  arch.position.set(0, 6.2, 25.2);
+  arch.rotation.z = Math.PI;
+  scene.add(arch);
+
+  // Central hub — a vertical light column marking the legendary weapon
+  // objective, visible from every corner of the arena.
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0xffb020, transparent: true, opacity: 0.18, side: THREE.DoubleSide,
+  });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 40, 16, 1, true), beamMat);
+  beam.position.set(0, 22, 43);
+  scene.add(beam);
+
+  // Hi-tech floor grid across the arena — thin emissive lines instead of
+  // a flat unbroken slab, so the ground itself reads as engineered.
+  const gridMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.16 });
+  for (let gx = -12; gx <= 12; gx += 3) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 34), gridMat);
+    line.rotation.x = -Math.PI / 2;
+    line.position.set(gx, 0.015, 43);
+    scene.add(line);
+  }
+  for (let gz = 27; gz <= 59; gz += 4) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(24, 0.03), gridMat);
+    line.rotation.x = -Math.PI / 2;
+    line.position.set(0, 0.015, gz);
+    scene.add(line);
   }
 }
 
@@ -293,6 +425,132 @@ function buildStarfield(scene: THREE.Scene) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x99aaff, size: 0.2 })));
+}
+
+// ── Weapon models ───────────────────────────────────────────
+// Builds a recognizable silhouette per weapon type out of primitives —
+// blade+guard+grip for the sword, bow limbs as a torus arc, a proper
+// rifle-like body+barrel for the blaster/railgun, etc — instead of the
+// single glowing box every weapon used to share. The weapon's own color
+// (WEAPON_DEFS) is the main material; the rarity tier color (TIER_COLORS)
+// accents the glowing parts, so higher-tier weapons visibly "glow richer"
+// on both the pedestal and in-hand. Origin sits at the grip/base, with
+// the model extending upward along +Y — convenient for both pedestal
+// floating (used as-is) and held-in-hand (rotated forward, see
+// updateHeldWeapon below).
+function buildWeaponMesh(type: WeaponType): THREE.Group {
+  const def = WEAPON_DEFS[type];
+  const primaryMat = new THREE.MeshStandardMaterial({ color: cssHex(def.color), metalness: 0.85, roughness: 0.25 });
+  const accentHex = cssHex(TIER_COLORS[def.tier]);
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: accentHex, emissive: accentHex, emissiveIntensity: 1.5, metalness: 0.5, roughness: 0.2,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c1c22, metalness: 0.5, roughness: 0.6 });
+  const group = new THREE.Group();
+
+  switch (type) {
+    case 'sword': {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, 0.02), primaryMat);
+      blade.position.y = 0.5;
+      group.add(blade);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.14, 4), primaryMat);
+      tip.position.y = 0.82;
+      tip.rotation.y = Math.PI / 4;
+      group.add(tip);
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.04, 0.05), accentMat);
+      guard.position.y = 0.24;
+      group.add(guard);
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.2, 8), darkMat);
+      grip.position.y = 0.12;
+      group.add(grip);
+      const pommel = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), accentMat);
+      pommel.position.y = 0.01;
+      group.add(pommel);
+      break;
+    }
+    case 'hammer': {
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.55, 8), darkMat);
+      handle.position.y = 0.3;
+      group.add(handle);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.2), primaryMat);
+      head.position.y = 0.62;
+      group.add(head);
+      for (const side of [-1, 1]) {
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.03, 12), accentMat);
+        cap.rotation.z = Math.PI / 2;
+        cap.position.set(side * 0.16, 0.62, 0);
+        group.add(cap);
+      }
+      break;
+    }
+    case 'blaster': {
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.14, 0.3), primaryMat);
+      body.position.y = 0.45;
+      group.add(body);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.32, 10), darkMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 0.47, -0.28);
+      group.add(barrel);
+      const tipRing = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.014, 8, 14), accentMat);
+      tipRing.position.set(0, 0.47, -0.44);
+      group.add(tipRing);
+      const grip = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.2, 0.09), darkMat);
+      grip.position.set(0, 0.24, 0.08);
+      grip.rotation.x = -0.25;
+      group.add(grip);
+      break;
+    }
+    case 'bow': {
+      const limb = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.028, 8, 20, Math.PI * 0.92), primaryMat);
+      limb.rotation.z = Math.PI / 2;
+      limb.rotation.y = Math.PI / 2;
+      limb.position.y = 0.42;
+      group.add(limb);
+      const bowstring = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.78, 6), darkMat);
+      bowstring.position.y = 0.42;
+      group.add(bowstring);
+      const gripWrap = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), accentMat);
+      gripWrap.position.y = 0.42;
+      group.add(gripWrap);
+      break;
+    }
+    case 'staff': {
+      const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.8, 8), darkMat);
+      rod.position.y = 0.42;
+      group.add(rod);
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.095, 16, 12), accentMat);
+      orb.position.y = 0.87;
+      group.add(orb);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.016, 8, 16), primaryMat);
+      ring.position.y = 0.87;
+      ring.rotation.x = Math.PI / 3;
+      group.add(ring);
+      break;
+    }
+    case 'railgun': {
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.17, 0.58), primaryMat);
+      body.position.y = 0.45;
+      group.add(body);
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.5, 12), darkMat);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(0, 0.47, -0.5);
+      group.add(barrel);
+      const core = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 12), accentMat);
+      core.position.set(0, 0.47, -0.1);
+      group.add(core);
+      for (const side of [-1, 1]) {
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.14, 0.1), accentMat);
+        fin.position.set(side * 0.08, 0.47, -0.72);
+        group.add(fin);
+      }
+      const stock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.22), darkMat);
+      stock.position.set(0, 0.4, 0.36);
+      group.add(stock);
+      break;
+    }
+  }
+
+  return group;
 }
 
 // ── Renderer factory — works on both web and native ─────────
@@ -388,6 +646,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
 
       // World
       buildPlatformMeshes(scene);
+      buildArenaDecor(scene);
       buildStarfield(scene);
 
       // Ground plane
@@ -409,30 +668,47 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         return m;
       }
 
-      // ── PvP weapon crates ──────────────────────────────
-      // One glowing octahedron per spawn point; hidden while on cooldown
+      // ── PvP weapon pedestals ────────────────────────────
+      // A real weapon model (see buildWeaponMesh) hovers and slowly spins
+      // above a lit pedestal, with a soft vertical beam and a ground ring
+      // — the loot-drop look of a real shooter, colored by rarity tier
+      // (TIER_COLORS) so a legendary pickup is visibly more dramatic than
+      // a common one from across the arena. Hidden while on cooldown
       // (checked every frame against weaponTakenAtRef, no rebuild needed).
       const crates = PVP_WEAPON_SPAWNS.map((spawn) => {
         const def = WEAPON_DEFS[spawn.type];
-        const colorHex = cssHex(def.color);
-        const mesh = new THREE.Mesh(
-          new THREE.OctahedronGeometry(0.32, 0),
-          new THREE.MeshStandardMaterial({
-            color: colorHex, emissive: colorHex, emissiveIntensity: 0.9,
-            metalness: 0.8, roughness: 0.2,
-          }),
+        const tierHex = cssHex(TIER_COLORS[def.tier]);
+
+        const weaponModel = buildWeaponMesh(spawn.type);
+        weaponModel.position.set(spawn.x, spawn.y + 0.55, spawn.z);
+        weaponModel.rotation.x = Math.PI / 10; // tilt so the silhouette reads while spinning
+        scene.add(weaponModel);
+
+        // Pedestal base — small dark plinth the weapon floats above
+        const base = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.42, 0.5, 0.14, 16),
+          new THREE.MeshStandardMaterial({ color: 0x14141c, metalness: 0.8, roughness: 0.3 }),
         );
-        mesh.position.set(spawn.x, spawn.y + 0.3, spawn.z);
-        scene.add(mesh);
-        // A soft ground ring so the crate reads clearly against the floor
+        base.position.set(spawn.x, spawn.y + 0.07, spawn.z);
+        scene.add(base);
+
+        // Soft vertical beam + ground ring, tinted by rarity
+        const beam = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.22, 0.22, 3.2, 12, 1, true),
+          new THREE.MeshBasicMaterial({ color: tierHex, transparent: true, opacity: 0.16, side: THREE.DoubleSide }),
+        );
+        beam.position.set(spawn.x, spawn.y + 1.7, spawn.z);
+        scene.add(beam);
+
         const ring = new THREE.Mesh(
-          new THREE.RingGeometry(0.4, 0.5, 20),
-          new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+          new THREE.RingGeometry(0.42, 0.54, 24),
+          new THREE.MeshBasicMaterial({ color: tierHex, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
         );
         ring.rotation.x = -Math.PI / 2;
-        ring.position.set(spawn.x, spawn.y + 0.02, spawn.z);
+        ring.position.set(spawn.x, spawn.y + 0.015, spawn.z);
         scene.add(ring);
-        return { id: spawn.id, mesh, ring };
+
+        return { id: spawn.id, mesh: weaponModel, ring, base, beam, baseY: spawn.y + 0.55 };
       });
 
       // Characters
@@ -459,7 +735,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
       // unarmed-looking there for both local and remote players — a
       // known limitation). Shared by the local player and every remote
       // pool entry so everyone's held weapon renders for everyone.
-      interface HeldWeaponState { type: WeaponType | null; mesh: THREE.Mesh | null }
+      interface HeldWeaponState { type: WeaponType | null; mesh: THREE.Object3D | null }
       function updateHeldWeapon(rig: AnyRig, held: HeldWeaponState, desired: WeaponType | null | undefined) {
         const type = desired ?? null;
         if (type === held.type) return;
@@ -469,14 +745,14 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           held.mesh = null;
         }
         if (type && rig.kind === 'procedural') {
-          const def = WEAPON_DEFS[type];
-          const colorHex = cssHex(def.color);
-          const mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(0.06, 0.4, 0.06),
-            new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.9 }),
-          );
-          mesh.position.set(0, -0.4, -0.05);
-          mesh.rotation.x = 0.3;
+          // Same weapon model used on the pedestal, scaled down and
+          // rotated forward-and-down so it reads as gripped in the hand
+          // rather than floating loot.
+          const mesh = buildWeaponMesh(type);
+          mesh.scale.setScalar(0.55);
+          mesh.position.set(0.02, -0.36, -0.06);
+          mesh.rotation.x = -Math.PI / 2 + 0.35;
+          mesh.rotation.z = 0.1;
           rig.rArm.add(mesh);
           held.mesh = mesh;
         }
@@ -582,8 +858,11 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           const available = now - takenAt > WEAPON_RESPAWN_MS;
           crate.mesh.visible = available;
           crate.ring.visible = available;
+          crate.base.visible = available;
+          crate.beam.visible = available;
           if (available) {
             crate.mesh.rotation.y += 0.03;
+            crate.mesh.position.y = crate.baseY + Math.sin(now / 500) * 0.08;
           }
         }
 
