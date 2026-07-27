@@ -6,6 +6,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -287,7 +288,11 @@ export default function GameScreen() {
 
             <Text style={styles.settingsSubTitle}>اختر السكن</Text>
 
-            <View style={styles.skinGrid}>
+            <ScrollView
+              style={styles.skinScroll}
+              contentContainerStyle={styles.skinGrid}
+              showsVerticalScrollIndicator={true}
+            >
               {SKINS.map((skin) => {
                 const selected = skin.id === playerSkinId;
                 return (
@@ -312,7 +317,11 @@ export default function GameScreen() {
                   </Pressable>
                 );
               })}
-            </View>
+            </ScrollView>
+
+            <Pressable style={styles.doneBtn} onPress={() => setSettingsVisible(false)}>
+              <Text style={styles.doneBtnTxt}>تم</Text>
+            </Pressable>
           </LinearGradient>
         </View>
       </Modal>
@@ -465,7 +474,7 @@ const styles = StyleSheet.create({
   settingsCard: {
     width: '86%',
     maxWidth: 420,
-    maxHeight: '82%',
+    maxHeight: '86%',
     borderRadius: 20,
     padding: 20,
     borderWidth: 1.5,
@@ -496,20 +505,27 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 10,
   },
+  skinScroll: {
+    maxHeight: 340,
+  },
   skinGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
     justifyContent: 'flex-start',
+    paddingBottom: 4,
   },
   skinCard: {
     width: 84,
+    height: 104,
     alignItems: 'center',
-    paddingVertical: 10,
+    justifyContent: 'flex-start',
+    paddingTop: 10,
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.04)',
     borderWidth: 1.5,
     borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
   },
   skinCardSelected: {
     borderColor: '#00ffcc',
@@ -558,9 +574,10 @@ const styles = StyleSheet.create({
   },
   skinName: {
     color: '#e8f8f5',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
     textAlign: 'center',
+    paddingHorizontal: 4,
   },
   skinCheckBadge: {
     position: 'absolute',
@@ -572,5 +589,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#00ffcc',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  doneBtn: {
+    marginTop: 16,
+    backgroundColor: '#00ffcc',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  doneBtnTxt: {
+    color: '#06060f',
+    fontWeight: '800',
+    fontSize: 15,
   },
 });
