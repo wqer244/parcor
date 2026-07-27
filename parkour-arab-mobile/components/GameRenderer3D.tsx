@@ -6,7 +6,7 @@ import { StyleSheet, Platform, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GLView } from 'expo-gl';
 import * as THREE from 'three';
-import { PLATFORMS, PhysState3D } from '@/services/game3DPhysics';
+import { PLATFORMS, PhysState3D, WeaponType, WEAPON_DEFS, PVP_WEAPON_SPAWNS, WEAPON_RESPAWN_MS } from '@/services/game3DPhysics';
 import { Skin, getSkin, DEFAULT_SKIN_ID, CHARACTER_MODEL } from '@/constants/skins';
 import { Asset } from 'expo-asset';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -25,6 +25,7 @@ export interface RemotePlayer3D {
   z: number;
   color: string;
   skinId?: string;
+  weapon?: WeaponType | null;
   name: string;
 }
 
@@ -38,6 +39,12 @@ interface Props {
   // exactly like physStateRef, so this doesn't need to be React state.
   orbitYawRef: React.MutableRefObject<number>;
   orbitPitchRef: React.MutableRefObject<number>;
+  // PvP — weapon crate cooldown timestamps (weaponId -> last taken at,
+  // 0/undefined = available) and the local player's currently held
+  // weapon, read fresh every frame so crate visibility and the held prop
+  // stay in sync without re-mounting the GL scene.
+  weaponTakenAtRef: React.MutableRefObject<Record<string, number>>;
+  currentWeaponRef: React.MutableRefObject<WeaponType | null>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -348,7 +355,7 @@ function WebPlaceholder() {
 }
 
 // ── Native 3D renderer (hooks always called) ────────────────
-function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef }: Props) {
+function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef, weaponTakenAtRef, currentWeaponRef }: Props) {
   const rafRef = useRef<number>(0);
 
   const onContextCreate = useCallback(
@@ -402,6 +409,32 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         return m;
       }
 
+      // ── PvP weapon crates ──────────────────────────────
+      // One glowing octahedron per spawn point; hidden while on cooldown
+      // (checked every frame against weaponTakenAtRef, no rebuild needed).
+      const crates = PVP_WEAPON_SPAWNS.map((spawn) => {
+        const def = WEAPON_DEFS[spawn.type];
+        const colorHex = cssHex(def.color);
+        const mesh = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.32, 0),
+          new THREE.MeshStandardMaterial({
+            color: colorHex, emissive: colorHex, emissiveIntensity: 0.9,
+            metalness: 0.8, roughness: 0.2,
+          }),
+        );
+        mesh.position.set(spawn.x, spawn.y + 0.3, spawn.z);
+        scene.add(mesh);
+        // A soft ground ring so the crate reads clearly against the floor
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(0.4, 0.5, 20),
+          new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(spawn.x, spawn.y + 0.02, spawn.z);
+        scene.add(ring);
+        return { id: spawn.id, mesh, ring };
+      });
+
       // Characters
       let playerRig: AnyRig = createCharacter(playerSkin);
       scene.add(playerRig.group);
@@ -420,7 +453,40 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           });
       }
 
-      interface PoolEntry { rig: AnyRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number; skinId: string; loading: boolean; }
+      // Held-weapon prop — a small glowing shape parented to a rig's
+      // right arm (procedural rig only; the GLB model skin has no
+      // matching hand bone we can safely attach to, so it goes
+      // unarmed-looking there for both local and remote players — a
+      // known limitation). Shared by the local player and every remote
+      // pool entry so everyone's held weapon renders for everyone.
+      interface HeldWeaponState { type: WeaponType | null; mesh: THREE.Mesh | null }
+      function updateHeldWeapon(rig: AnyRig, held: HeldWeaponState, desired: WeaponType | null | undefined) {
+        const type = desired ?? null;
+        if (type === held.type) return;
+        held.type = type;
+        if (held.mesh) {
+          held.mesh.parent?.remove(held.mesh);
+          held.mesh = null;
+        }
+        if (type && rig.kind === 'procedural') {
+          const def = WEAPON_DEFS[type];
+          const colorHex = cssHex(def.color);
+          const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(0.06, 0.4, 0.06),
+            new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.9 }),
+          );
+          mesh.position.set(0, -0.4, -0.05);
+          mesh.rotation.x = 0.3;
+          rig.rArm.add(mesh);
+          held.mesh = mesh;
+        }
+      }
+      const playerHeldWeapon: HeldWeaponState = { type: null, mesh: null };
+
+      interface PoolEntry {
+        rig: AnyRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number;
+        skinId: string; loading: boolean; heldWeapon: HeldWeaponState;
+      }
       const remotePool = new Map<string, PoolEntry>();
 
       // Camera
@@ -486,6 +552,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
             entry.loading = false;
             scene.remove(entry.rig.group);
             entry.rig = createModelRig(base);
+            entry.heldWeapon = { type: null, mesh: null }; // old prop was on the removed rig
             scene.add(entry.rig.group);
           })
           .catch(() => { entry.loading = false; });
@@ -505,6 +572,20 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         if (moving) legPhase += 0.18; else idlePhase += 0.045;
         animateRig(playerRig, s.x, s.y, s.z, s.facingAngle, s.vy, s.onGround, moving, legPhase, idlePhase, playerShadow);
         if (playerRig.kind === 'model') playerRig.mixer.update(delta);
+        updateHeldWeapon(playerRig, playerHeldWeapon, currentWeaponRef.current);
+
+        // PvP weapon crates — hidden while on cooldown, otherwise a slow
+        // spin + bob so they read as "live" pickups.
+        const now = Date.now();
+        for (const crate of crates) {
+          const takenAt = weaponTakenAtRef.current[crate.id] ?? 0;
+          const available = now - takenAt > WEAPON_RESPAWN_MS;
+          crate.mesh.visible = available;
+          crate.ring.visible = available;
+          if (available) {
+            crate.mesh.rotation.y += 0.03;
+          }
+        }
 
         const remotes = remotePlayersRef.current;
         const seen = new Set<string>();
@@ -514,7 +595,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           const rpSkin = getSkin(rpSkinId);
           let entry = remotePool.get(rp.id);
           if (!entry) {
-            entry = { rig: createCharacter(rpSkin), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z, skinId: rpSkinId, loading: false };
+            entry = { rig: createCharacter(rpSkin), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z, skinId: rpSkinId, loading: false, heldWeapon: { type: null, mesh: null } };
             scene.add(entry.rig.group);
             remotePool.set(rp.id, entry);
             if (rpSkin.isModel) upgradeToModelWhenReady(entry);
@@ -523,9 +604,11 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
             scene.remove(entry.rig.group);
             entry.rig = createCharacter(rpSkin);
             entry.skinId = rpSkinId;
+            entry.heldWeapon = { type: null, mesh: null }; // old prop was on the removed rig
             scene.add(entry.rig.group);
             if (rpSkin.isModel) upgradeToModelWhenReady(entry);
           }
+          updateHeldWeapon(entry.rig, entry.heldWeapon, rp.weapon);
           // Infer movement + facing from frame-to-frame position deltas,
           // since remote players only send us a position, not full physics.
           const ddx = rp.x - entry.lastX;
