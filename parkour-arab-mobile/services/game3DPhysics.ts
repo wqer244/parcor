@@ -25,6 +25,64 @@ export const PLAYER_COLORS = [
   '#aa00ff', '#ff3333', '#33ff33', '#ff6600',
 ];
 
+// ── PvP Arena ──────────────────────────────────────────────
+// The arena sits behind the spawn point, opposite the parkour course
+// (which runs along -Z) — walk backward from start to reach it.
+export type WeaponType = 'sword' | 'hammer' | 'blaster' | 'bow' | 'staff';
+
+export interface WeaponDef {
+  name: string;
+  damage: number;
+  range: number;   // attack reach, in world units
+  color: string;    // used for both the pickup crate glow and the held prop
+  ranged: boolean;   // true = can hit from a distance; false = melee-only
+}
+
+export const WEAPON_DEFS: Record<WeaponType, WeaponDef> = {
+  sword:   { name: 'سيف',        damage: 18, range: 1.8,  color: '#c8c8d8', ranged: false },
+  hammer:  { name: 'مطرقة',      damage: 28, range: 1.6,  color: '#a06a35', ranged: false },
+  blaster: { name: 'مسدس طاقة',  damage: 14, range: 14,   color: '#00aaff', ranged: true },
+  bow:     { name: 'قوس',        damage: 16, range: 16,   color: '#33ff33', ranged: true },
+  staff:   { name: 'عصا سحرية',  damage: 20, range: 12,   color: '#aa00ff', ranged: true },
+};
+
+export interface WeaponSpawn {
+  id: string;
+  type: WeaponType;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const PVP_WEAPON_SPAWNS: WeaponSpawn[] = [
+  { id: 'w1', type: 'sword',   x: -8, y: 0.5, z: 34 },
+  { id: 'w2', type: 'blaster', x: 8,  y: 0.5, z: 34 },
+  { id: 'w3', type: 'bow',     x: 0,  y: 0.5, z: 40 },
+  { id: 'w4', type: 'staff',   x: -8, y: 0.5, z: 50 },
+  { id: 'w5', type: 'hammer',  x: 8,  y: 0.5, z: 50 },
+];
+
+export const WEAPON_RESPAWN_MS = 15000;
+export const WEAPON_PICKUP_RADIUS = 1.4;
+export const MELEE_DAMAGE = 10;
+export const MELEE_RANGE = 1.6;
+export const ATTACK_ARC = Math.PI / 2.2; // ~82° cone in front of the attacker
+export const PVP_MAX_HEALTH = 100;
+export const ATTACK_COOLDOWN_MS = 500;
+
+// Arena floor bounds (a subregion of the 'pvp-ground' platform below) —
+// used to detect entering/leaving the PvP zone (health bar, weapon pickups,
+// and combat are only active inside these bounds).
+export const PVP_ARENA_BOUNDS = { minX: -12, maxX: 12, minZ: 26, maxZ: 60 };
+export function isInPvPArena(x: number, z: number): boolean {
+  return (
+    x >= PVP_ARENA_BOUNDS.minX && x <= PVP_ARENA_BOUNDS.maxX &&
+    z >= PVP_ARENA_BOUNDS.minZ && z <= PVP_ARENA_BOUNDS.maxZ
+  );
+}
+// Where a player respawns after their health hits 0 in the arena.
+export const PVP_SPAWN = { x: 0, y: 0.5, z: 33 };
+
 export interface Platform3D {
   id: string;
   x: number;       // center X
@@ -99,6 +157,15 @@ export const PLATFORMS: Platform3D[] = [
   // Finish
   { id:'finish', x:0, y:13.0, z:-119.25, width:6, height:0.6, depth:6,
     color:'#5a4000', glowColor:'#ffd700', type:'finish' },
+
+  // ── PvP Arena ──────────────────────────────────────────
+  // Positioned behind spawn (+Z), opposite the parkour course (-Z) —
+  // walk backward from the start platform to reach it. One flat platform
+  // covers both the walkway and the arena floor for simplicity; the
+  // actual PvP zone (health/combat/weapons) is the +Z half of it — see
+  // PVP_ARENA_BOUNDS above.
+  { id:'pvp-ground', x:0, y:0, z:33.5, width:26, height:0.5, depth:54,
+    color:'#2a0d0d', glowColor:'#ff3333', type:'ground' },
 ];
 
 // Distance (|z|) of the finish line from the start — used by the HUD to
@@ -136,7 +203,7 @@ export function stepPhysics3D(
     vy = Math.max(vy - GRAVITY, -MAX_FALL_SPEED);
   }
 
-  const newX = Math.max(-6, Math.min(6, x + vx));
+  const newX = Math.max(-13, Math.min(13, x + vx));
   const newY = y + vy;
   const newZ = z + vz;
 
