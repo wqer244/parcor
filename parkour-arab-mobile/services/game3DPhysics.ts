@@ -140,6 +140,15 @@ export interface Input3D {
   left: boolean;
   right: boolean;
   jump: boolean;
+  // Optional analog move vector in WORLD space (x, z), already rotated to
+  // match the camera's current facing by the caller (see game.tsx, which
+  // rotates the virtual joystick's screen-space push by orbitYawRef every
+  // tick). Magnitude 0..1 — a light push moves slower, a full push moves
+  // at MOVE_SPEED. When present (above a small deadzone) this takes
+  // priority over the legacy boolean D-pad fields below, giving free
+  // 360° movement instead of 8 fixed directions.
+  moveX?: number;
+  moveZ?: number;
 }
 
 // ── World Map ──────────────────────────────────────────────
@@ -280,15 +289,25 @@ export function stepPhysics3D(
 
   let { x, y, z, vx, vy, vz, onGround, facingAngle } = state;
 
-  // Horizontal intent
-  const dx = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-  const dz = (input.forward ? -1 : 0) + (input.backward ? 1 : 0);
-  const len = Math.sqrt(dx * dx + dz * dz);
-  const nx = len > 0 ? dx / len : 0;
-  const nz = len > 0 ? dz / len : 0;
+  // Horizontal intent — analog joystick vector (already rotated to world
+  // space by the caller, camera-relative) takes priority when present;
+  // otherwise fall back to the legacy boolean D-pad directions, which are
+  // still fully supported for anyone using GameControls' old props.
+  let dirX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  let dirZ = (input.forward ? -1 : 0) + (input.backward ? 1 : 0);
+  let magnitude = 1; // booleans are always a full push
+  const analogLen = Math.sqrt((input.moveX ?? 0) ** 2 + (input.moveZ ?? 0) ** 2);
+  if (analogLen > 0.08) {
+    dirX = input.moveX!;
+    dirZ = input.moveZ!;
+    magnitude = Math.min(1, analogLen);
+  }
+  const len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+  const nx = len > 0 ? dirX / len : 0;
+  const nz = len > 0 ? dirZ / len : 0;
 
-  vx = nx * MOVE_SPEED;
-  vz = nz * MOVE_SPEED;
+  vx = nx * MOVE_SPEED * magnitude;
+  vz = nz * MOVE_SPEED * magnitude;
   if (len > 0) facingAngle = Math.atan2(nx, nz);
 
   // Jump
