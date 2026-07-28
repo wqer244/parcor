@@ -29,6 +29,10 @@ export interface RemotePlayer3D {
   color: string;
   skinId?: string;
   weapon?: WeaponType | null;
+  // Date.now() of this player's most recent attack — a change in this
+  // value (not its absolute value) is what triggers the swing/fire
+  // animation on their rig. See PlayerContext's notifyAttack.
+  attackedAt?: number;
   name: string;
 }
 
@@ -48,6 +52,13 @@ interface Props {
   // stay in sync without re-mounting the GL scene.
   weaponTakenAtRef: React.MutableRefObject<Record<string, number>>;
   currentWeaponRef: React.MutableRefObject<WeaponType | null>;
+  // Local player's most recent attack attempt (timestamp + the weapon it
+  // was made with) — drives the swing/fire animation on the local rig,
+  // same mechanism used for remote rigs via RemotePlayer3D.attackedAt.
+  localAttackRef: React.MutableRefObject<{ at: number; weapon: WeaponType | null }>;
+  // Date.now() of the last hit the local player took — drives a brief
+  // red hit-flash on their own model.
+  localDamageAtRef: React.MutableRefObject<number>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -69,6 +80,9 @@ interface CharacterRig {
   rArm: THREE.Object3D;
   lLeg: THREE.Object3D;
   rLeg: THREE.Object3D;
+  // Exposed so the animate loop can briefly tint it red on taking damage
+  // without needing a separate overlay mesh per character.
+  suitMat: THREE.MeshStandardMaterial;
 }
 
 // The GLB-based rig (loaded from assets/models/character.glb). It has its
@@ -239,42 +253,76 @@ function createCharacter(skin: Skin): CharacterRig {
   rLeg.add(rShoe);
   group.add(rLeg);
 
-  return { kind: 'procedural', group, torso: torsoPivot, head: headPivot, lArm, rArm, lLeg, rLeg };
+  return { kind: 'procedural', group, torso: torsoPivot, head: headPivot, lArm, rArm, lLeg, rLeg, suitMat };
+}
+
+// ── Shared material cache ────────────────────────────────────
+// Keyed by every property that actually affects the look, so visually
+// identical requests always reuse the same Material instance instead of
+// compiling/allocating a new one. Course platforms only use ~12 distinct
+// colors across 34+ pieces, so this alone cuts dozens of duplicate
+// materials down to a dozen shared ones — and stays flat as more
+// platforms/levels are added later instead of growing with content.
+const standardMatCache = new Map<string, THREE.MeshStandardMaterial>();
+function getStandardMat(opts: {
+  color: number; emissive?: number; emissiveIntensity?: number; metalness?: number; roughness?: number;
+}): THREE.MeshStandardMaterial {
+  const key = `${opts.color}|${opts.emissive ?? 0}|${opts.emissiveIntensity ?? 0}|${opts.metalness ?? 1}|${opts.roughness ?? 1}`;
+  let mat = standardMatCache.get(key);
+  if (!mat) {
+    mat = new THREE.MeshStandardMaterial({
+      color: opts.color,
+      emissive: opts.emissive ?? 0x000000,
+      emissiveIntensity: opts.emissiveIntensity ?? 0,
+      metalness: opts.metalness ?? 1,
+      roughness: opts.roughness ?? 1,
+    });
+    standardMatCache.set(key, mat);
+  }
+  return mat;
 }
 
 // ── Platform meshes ────────────────────────────────────────
 function buildPlatformMeshes(scene: THREE.Scene) {
+  // Arena "armor panel" trim (bevel + 4 corner beacons per arena platform)
+  // used to be one Mesh per piece — ~65 separate draw calls for just 13
+  // platforms. Real engines handle repeated static props with GPU
+  // instancing: one shared geometry, one draw call, N per-instance
+  // transforms. We collect the transforms while walking PLATFORMS below,
+  // then submit them as two InstancedMesh objects after the loop — the
+  // draw-call cost stays at 2 no matter how many arena platforms get
+  // added in the future.
+  const bevelDummy = new THREE.Object3D();
+  const bevelTransforms: { x: number; y: number; z: number; sx: number; sz: number }[] = [];
+  const beaconDummy = new THREE.Object3D();
+  const beaconTransforms: { x: number; y: number; z: number; color: number }[] = [];
+
   for (const p of PLATFORMS) {
-    const geo = new THREE.BoxGeometry(p.width, p.height, p.depth);
-    const mat = new THREE.MeshStandardMaterial({
+    const mat = getStandardMat({
       color: cssHex(p.color),
       emissive: cssHex(p.glowColor),
       emissiveIntensity: p.type === 'finish' ? 0.55 : 0.18,
       metalness: 0.85,
       roughness: 0.2,
     });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(p.width, p.height, p.depth), mat);
     mesh.position.set(p.x, p.y - p.height / 2, p.z);
     scene.add(mesh);
 
     // Top glow strip
-    const strip = new THREE.Mesh(
-      new THREE.BoxGeometry(p.width + 0.06, 0.035, p.depth + 0.06),
-      new THREE.MeshStandardMaterial({
-        color: cssHex(p.glowColor),
-        emissive: cssHex(p.glowColor),
-        emissiveIntensity: p.type === 'finish' ? 2.2 : 1.4,
-      }),
-    );
+    const stripMat = getStandardMat({
+      color: cssHex(p.glowColor),
+      emissive: cssHex(p.glowColor),
+      emissiveIntensity: p.type === 'finish' ? 2.2 : 1.4,
+    });
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(p.width + 0.06, 0.035, p.depth + 0.06), stripMat);
     strip.position.set(p.x, p.y + 0.01, p.z);
     scene.add(strip);
 
     // Finish pillars
     if (p.type === 'finish') {
       const pillarGeo = new THREE.CylinderGeometry(0.07, 0.07, 3, 8);
-      const pillarMat = new THREE.MeshStandardMaterial({
-        color: 0xffd700, emissive: 0xffd700, emissiveIntensity: 1.0,
-      });
+      const pillarMat = getStandardMat({ color: 0xffd700, emissive: 0xffd700, emissiveIntensity: 1.0 });
       for (const px of [-2.3, 2.3]) {
         const pillar = new THREE.Mesh(pillarGeo, pillarMat);
         pillar.position.set(p.x + px, p.y + 1.5, p.z);
@@ -285,31 +333,65 @@ function buildPlatformMeshes(scene: THREE.Scene) {
     // Arena structures (decks, hub, cover, steps) get armor-panel trim —
     // a recessed dark bevel + four corner rivets/beacons — instead of a
     // plain glowing cube, so the PvP zone reads as built hardware rather
-    // than parkour geometry re-used as a battlefield.
+    // than parkour geometry re-used as a battlefield. Transforms only are
+    // collected here; the actual meshes are built once, in bulk, below.
     if (p.arena) {
-      const bevelMat = new THREE.MeshStandardMaterial({
-        color: 0x0a0a10, metalness: 0.9, roughness: 0.3,
-      });
-      const bevel = new THREE.Mesh(
-        new THREE.BoxGeometry(Math.max(p.width - 0.3, 0.2), 0.05, Math.max(p.depth - 0.3, 0.2)),
-        bevelMat,
-      );
-      bevel.position.set(p.x, p.y - 0.01, p.z);
-      scene.add(bevel);
-
-      const beaconGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.22, 8);
-      const beaconMat = new THREE.MeshStandardMaterial({
-        color: cssHex(p.glowColor), emissive: cssHex(p.glowColor), emissiveIntensity: 2.5,
+      bevelTransforms.push({
+        x: p.x, y: p.y - 0.01, z: p.z,
+        sx: Math.max(p.width - 0.3, 0.2), sz: Math.max(p.depth - 0.3, 0.2),
       });
       const cornerInsetX = Math.max(p.width / 2 - 0.28, 0.1);
       const cornerInsetZ = Math.max(p.depth / 2 - 0.28, 0.1);
+      const beaconColor = cssHex(p.glowColor);
       for (const cx of [-cornerInsetX, cornerInsetX]) {
         for (const cz of [-cornerInsetZ, cornerInsetZ]) {
-          const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-          beacon.position.set(p.x + cx, p.y + 0.11, p.z + cz);
-          scene.add(beacon);
+          beaconTransforms.push({ x: p.x + cx, y: p.y + 0.11, z: p.z + cz, color: beaconColor });
         }
       }
+    }
+  }
+
+  // One draw call for every bevel panel, regardless of count. Each panel
+  // is a unit box scaled per-instance to that platform's footprint.
+  if (bevelTransforms.length) {
+    const bevelMat = getStandardMat({ color: 0x0a0a10, metalness: 0.9, roughness: 0.3 });
+    const bevelMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.05, 1), bevelMat, bevelTransforms.length);
+    bevelTransforms.forEach((t, i) => {
+      bevelDummy.position.set(t.x, t.y, t.z);
+      bevelDummy.scale.set(t.sx, 1, t.sz);
+      bevelDummy.updateMatrix();
+      bevelMesh.setMatrixAt(i, bevelDummy.matrix);
+    });
+    bevelMesh.instanceMatrix.needsUpdate = true;
+    scene.add(bevelMesh);
+  }
+
+  // One draw call per unique beacon color. Arena zones only use a handful
+  // of accent colors (~7 across the whole map), so grouping beacons by
+  // color and instancing each group collapses 50+ individual meshes down
+  // to a handful of draw calls. (Using InstancedMesh's per-instance
+  // vertex color instead was tempting, but three.js's standard shader only
+  // multiplies instance color into the diffuse channel, not emissive — it
+  // would silently wash every beacon out to the same white glow. Grouping
+  // by real material color is both simpler and correct.)
+  if (beaconTransforms.length) {
+    const beaconGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.22, 8);
+    const groups = new Map<number, { x: number; y: number; z: number }[]>();
+    for (const t of beaconTransforms) {
+      const arr = groups.get(t.color) ?? [];
+      arr.push({ x: t.x, y: t.y, z: t.z });
+      groups.set(t.color, arr);
+    }
+    for (const [color, positions] of groups) {
+      const beaconMat = getStandardMat({ color, emissive: color, emissiveIntensity: 2.5 });
+      const beaconMesh = new THREE.InstancedMesh(beaconGeo, beaconMat, positions.length);
+      positions.forEach((t, i) => {
+        beaconDummy.position.set(t.x, t.y, t.z);
+        beaconDummy.updateMatrix();
+        beaconMesh.setMatrixAt(i, beaconDummy.matrix);
+      });
+      beaconMesh.instanceMatrix.needsUpdate = true;
+      scene.add(beaconMesh);
     }
   }
 }
@@ -319,12 +401,18 @@ function buildPlatformMeshes(scene: THREE.Scene) {
 // "a lit rectangle with boxes on it" into a coliseum silhouette players
 // can recognize the shape of from across the map.
 function buildArenaDecor(scene: THREE.Scene) {
-  const pillarMat = new THREE.MeshStandardMaterial({
-    color: 0x151022, metalness: 0.85, roughness: 0.3,
-  });
-  const beaconMat = new THREE.MeshStandardMaterial({
-    color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.8,
-  });
+  const pillarMat = getStandardMat({ color: 0x151022, metalness: 0.85, roughness: 0.3 });
+  const beaconMat = getStandardMat({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.8 });
+  const ringMat = getStandardMat({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.2 });
+
+  // Pillar ring-bands (2 per pillar) all share one unit-radius geometry,
+  // scaled per instance to that pillar's actual radius — one draw call
+  // for every ring band on every pillar, present or future.
+  const ringDummy = new THREE.Object3D();
+  const ringMesh = new THREE.InstancedMesh(
+    new THREE.TorusGeometry(1, 0.035, 8, 20), ringMat, PVP_PILLARS.length * 2,
+  );
+  let ringIdx = 0;
 
   for (const pil of PVP_PILLARS) {
     const shaft = new THREE.Mesh(
@@ -334,36 +422,30 @@ function buildArenaDecor(scene: THREE.Scene) {
     shaft.position.set(pil.x, pil.height / 2, pil.z);
     scene.add(shaft);
 
-    // Glowing crown + ring bands so the towers read from a distance
+    // Glowing crown so the towers read from a distance. No PointLight
+    // here on purpose — six extra real-time lights would mean every
+    // PBR-shaded object in the whole scene has to factor six more lights
+    // into its per-pixel lighting every frame, which is real GPU cost on
+    // a mobile GPU. Emissive-only "fake glow" reads almost identically
+    // and costs nothing extra, which is how real games fake this too.
     const crown = new THREE.Mesh(new THREE.SphereGeometry(pil.radius * 1.4, 12, 10), beaconMat);
     crown.position.set(pil.x, pil.height + pil.radius * 0.6, pil.z);
     scene.add(crown);
 
-    const ringMat = new THREE.MeshStandardMaterial({
-      color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.2,
-    });
     for (const t of [0.32, 0.68]) {
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(pil.radius * 1.15, 0.035, 8, 20),
-        ringMat,
-      );
-      ring.rotation.x = Math.PI / 2;
-      ring.position.set(pil.x, pil.height * t, pil.z);
-      scene.add(ring);
+      ringDummy.position.set(pil.x, pil.height * t, pil.z);
+      ringDummy.rotation.set(Math.PI / 2, 0, 0);
+      ringDummy.scale.setScalar(pil.radius * 1.15);
+      ringDummy.updateMatrix();
+      ringMesh.setMatrixAt(ringIdx++, ringDummy.matrix);
     }
-
-    const beaconLight = new THREE.PointLight(0xff3333, 0.9, 14);
-    beaconLight.position.set(pil.x, pil.height + 0.5, pil.z);
-    scene.add(beaconLight);
   }
+  ringMesh.instanceMatrix.needsUpdate = true;
+  scene.add(ringMesh);
 
   // Perimeter energy walls — dark metal base with a bright top trim line
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: 0x1a0f14, metalness: 0.8, roughness: 0.4,
-  });
-  const trimMat = new THREE.MeshStandardMaterial({
-    color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.6,
-  });
+  const wallMat = getStandardMat({ color: 0x1a0f14, metalness: 0.8, roughness: 0.4 });
+  const trimMat = getStandardMat({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 1.6 });
   for (const w of PVP_WALL_SEGMENTS) {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(w.width, w.height, w.depth), wallMat);
     wall.position.set(w.x, w.height / 2, w.z);
@@ -379,9 +461,7 @@ function buildArenaDecor(scene: THREE.Scene) {
 
   // Entrance gate — a glowing arch bridging the two gate pillars, marking
   // the transition from the parkour walkway into the arena proper.
-  const archMat = new THREE.MeshStandardMaterial({
-    color: 0xffb020, emissive: 0xffb020, emissiveIntensity: 1.6,
-  });
+  const archMat = getStandardMat({ color: 0xffb020, emissive: 0xffb020, emissiveIntensity: 1.6 });
   const arch = new THREE.Mesh(new THREE.TorusGeometry(4.4, 0.09, 8, 24, Math.PI), archMat);
   arch.position.set(0, 6.2, 25.2);
   arch.rotation.z = Math.PI;
@@ -396,21 +476,23 @@ function buildArenaDecor(scene: THREE.Scene) {
   beam.position.set(0, 22, 43);
   scene.add(beam);
 
-  // Hi-tech floor grid across the arena — thin emissive lines instead of
-  // a flat unbroken slab, so the ground itself reads as engineered.
+  // Hi-tech floor grid — every line (vertical + horizontal) batched into
+  // one InstancedMesh instead of ~18 separate plane meshes.
   const gridMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.16 });
-  for (let gx = -12; gx <= 12; gx += 3) {
-    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 34), gridMat);
-    line.rotation.x = -Math.PI / 2;
-    line.position.set(gx, 0.015, 43);
-    scene.add(line);
-  }
-  for (let gz = 27; gz <= 59; gz += 4) {
-    const line = new THREE.Mesh(new THREE.PlaneGeometry(24, 0.03), gridMat);
-    line.rotation.x = -Math.PI / 2;
-    line.position.set(0, 0.015, gz);
-    scene.add(line);
-  }
+  const gridLines: { x: number; z: number; sx: number; sz: number }[] = [];
+  for (let gx = -12; gx <= 12; gx += 3) gridLines.push({ x: gx, z: 43, sx: 0.03, sz: 34 });
+  for (let gz = 27; gz <= 59; gz += 4) gridLines.push({ x: 0, z: gz, sx: 24, sz: 0.03 });
+  const gridMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), gridMat, gridLines.length);
+  const gridDummy = new THREE.Object3D();
+  gridLines.forEach((g, i) => {
+    gridDummy.position.set(g.x, 0.015, g.z);
+    gridDummy.rotation.set(-Math.PI / 2, 0, 0);
+    gridDummy.scale.set(g.sx, g.sz, 1);
+    gridDummy.updateMatrix();
+    gridMesh.setMatrixAt(i, gridDummy.matrix);
+  });
+  gridMesh.instanceMatrix.needsUpdate = true;
+  scene.add(gridMesh);
 }
 
 // ── Starfield ──────────────────────────────────────────────
@@ -428,6 +510,30 @@ function buildStarfield(scene: THREE.Scene) {
 }
 
 // ── Weapon models ───────────────────────────────────────────
+// Materials are cached per weapon type and reused by every instance of
+// that weapon (every pedestal + every player currently holding it). This
+// matters for scaling: without it, a busy arena with many players holding
+// weapons would keep allocating brand-new Material/shader-uniform objects
+// forever. One shared material per type/role means the object count stays
+// flat no matter how many players or pickups exist at once.
+const DARK_PROP_MAT = new THREE.MeshStandardMaterial({ color: 0x1c1c22, metalness: 0.5, roughness: 0.6 });
+const weaponMatCache = new Map<WeaponType, { primary: THREE.MeshStandardMaterial; accent: THREE.MeshStandardMaterial }>();
+function getWeaponMaterials(type: WeaponType) {
+  let entry = weaponMatCache.get(type);
+  if (!entry) {
+    const def = WEAPON_DEFS[type];
+    const accentHex = cssHex(TIER_COLORS[def.tier]);
+    entry = {
+      primary: new THREE.MeshStandardMaterial({ color: cssHex(def.color), metalness: 0.85, roughness: 0.25 }),
+      accent: new THREE.MeshStandardMaterial({
+        color: accentHex, emissive: accentHex, emissiveIntensity: 1.5, metalness: 0.5, roughness: 0.2,
+      }),
+    };
+    weaponMatCache.set(type, entry);
+  }
+  return entry;
+}
+
 // Builds a recognizable silhouette per weapon type out of primitives —
 // blade+guard+grip for the sword, bow limbs as a torus arc, a proper
 // rifle-like body+barrel for the blaster/railgun, etc — instead of the
@@ -439,13 +545,8 @@ function buildStarfield(scene: THREE.Scene) {
 // floating (used as-is) and held-in-hand (rotated forward, see
 // updateHeldWeapon below).
 function buildWeaponMesh(type: WeaponType): THREE.Group {
-  const def = WEAPON_DEFS[type];
-  const primaryMat = new THREE.MeshStandardMaterial({ color: cssHex(def.color), metalness: 0.85, roughness: 0.25 });
-  const accentHex = cssHex(TIER_COLORS[def.tier]);
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: accentHex, emissive: accentHex, emissiveIntensity: 1.5, metalness: 0.5, roughness: 0.2,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1c1c22, metalness: 0.5, roughness: 0.6 });
+  const { primary: primaryMat, accent: accentMat } = getWeaponMaterials(type);
+  const darkMat = DARK_PROP_MAT;
   const group = new THREE.Group();
 
   switch (type) {
@@ -613,7 +714,10 @@ function WebPlaceholder() {
 }
 
 // ── Native 3D renderer (hooks always called) ────────────────
-function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef, weaponTakenAtRef, currentWeaponRef }: Props) {
+function NativeRenderer({
+  physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef,
+  weaponTakenAtRef, currentWeaponRef, localAttackRef, localDamageAtRef,
+}: Props) {
   const rafRef = useRef<number>(0);
 
   const onContextCreate = useCallback(
@@ -711,6 +815,120 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         return { id: spawn.id, mesh: weaponModel, ring, base, beam, baseY: spawn.y + 0.55 };
       });
 
+      // ── Attack visual effects ────────────────────────────────────
+      // Ranged weapons get a brief tracer beam + muzzle flash on every
+      // shot. Both are drawn from small fixed-size pools built once here
+      // and reused by every attack, local or remote — same "never
+      // allocate in the hot path" reasoning as everywhere else in this
+      // file, since a busy arena could mean many shots per second.
+      const ATTACK_ANIM_MS = 380; // melee swing length; ranged recoil decays faster within this same window
+      const TRACER_LIFE_MS = 150;
+      const FLASH_LIFE_MS = 90;
+      const EFFECT_POOL_SIZE = 10;
+
+      const tracerGeo = new THREE.BoxGeometry(0.045, 0.045, 1);
+      tracerGeo.translate(0, 0, -0.5); // origin at the back end, extends toward local -Z (the rig's forward)
+      interface EffectSlot { mesh: THREE.Mesh; active: boolean; start: number }
+      const tracerPool: EffectSlot[] = [];
+      for (let i = 0; i < EFFECT_POOL_SIZE; i++) {
+        const mesh = new THREE.Mesh(tracerGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
+        mesh.visible = false;
+        scene.add(mesh);
+        tracerPool.push({ mesh, active: false, start: 0 });
+      }
+      let tracerCursor = 0;
+
+      const flashGeo = new THREE.SphereGeometry(0.13, 8, 6);
+      const flashPool: EffectSlot[] = [];
+      for (let i = 0; i < EFFECT_POOL_SIZE; i++) {
+        const mesh = new THREE.Mesh(flashGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
+        mesh.visible = false;
+        scene.add(mesh);
+        flashPool.push({ mesh, active: false, start: 0 });
+      }
+      let flashCursor = 0;
+      const muzzleScratch = new THREE.Vector3(); // reused every shot — see fireRangedEffect
+
+      // Fires a tracer + muzzle flash from a rig's gun hand, in the exact
+      // direction the rig is currently facing (rig.group's own -Z axis —
+      // getWorldPosition/quaternion do the correct math regardless of
+      // parent transforms, so no manual trig needed here).
+      function fireRangedEffect(rig: CharacterRig, colorHex: number, range: number) {
+        rig.rArm.getWorldPosition(muzzleScratch);
+
+        const t = tracerPool[tracerCursor];
+        tracerCursor = (tracerCursor + 1) % EFFECT_POOL_SIZE;
+        t.mesh.position.copy(muzzleScratch);
+        t.mesh.quaternion.copy(rig.group.quaternion);
+        t.mesh.scale.z = Math.min(range, 16);
+        t.active = true;
+        t.start = Date.now();
+        t.mesh.visible = true;
+        (t.mesh.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
+        (t.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85;
+
+        const f = flashPool[flashCursor];
+        flashCursor = (flashCursor + 1) % EFFECT_POOL_SIZE;
+        f.mesh.position.copy(muzzleScratch);
+        f.mesh.scale.setScalar(1);
+        f.active = true;
+        f.start = Date.now();
+        f.mesh.visible = true;
+        (f.mesh.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
+        (f.mesh.material as THREE.MeshBasicMaterial).opacity = 1;
+      }
+
+      // Called once, the instant a new attack timestamp is seen (local or
+      // remote) — fires the one-off ranged effect if applicable. The
+      // per-frame pose (swing/recoil) is applied separately every frame
+      // for the animation's duration, see applyAttackPose below.
+      function triggerAttackEffect(rig: AnyRig, weaponType: WeaponType | null | undefined) {
+        if (rig.kind !== 'procedural') return; // model rig has no puppeteerable gun hand — known limitation
+        const def = weaponType ? WEAPON_DEFS[weaponType] : null;
+        if (def?.ranged) fireRangedEffect(rig, cssHex(def.color), def.range);
+      }
+
+      // Drives the arm/torso pose for the attack animation every frame it
+      // is active. Melee: a windup → strike → recover swing arc. Ranged:
+      // a sharp recoil kick that decays fast, since the "shot" itself is
+      // the tracer/flash above, not the pose.
+      function applyAttackPose(rig: CharacterRig, weaponType: WeaponType | null | undefined, elapsedMs: number) {
+        const t = Math.min(1, elapsedMs / ATTACK_ANIM_MS);
+        const def = weaponType ? WEAPON_DEFS[weaponType] : null;
+        if (def?.ranged) {
+          const kick = Math.max(0, 1 - t * 5);
+          rig.rArm.rotation.x = 0.2 - kick * 0.4;
+          rig.rArm.rotation.z = -0.08;
+        } else {
+          let rot: number;
+          if (t < 0.25) rot = -0.3 * (t / 0.25);
+          else if (t < 0.55) rot = -0.3 + ((t - 0.25) / 0.3) * 2.3;
+          else rot = 2.0 * (1 - (t - 0.55) / 0.45);
+          rig.rArm.rotation.x = rot;
+          rig.rArm.rotation.z = Math.sin(t * Math.PI) * -0.3;
+          rig.torso.rotation.y = Math.sin(t * Math.PI) * 0.15;
+        }
+      }
+
+      // Brief red tint on a rig's suit material when it takes damage — the
+      // simplest possible "you got hit" readback with no extra geometry.
+      // Local-player only: knowing when a *remote* player got hit would
+      // need broadcasting that event to everyone (today only the target
+      // itself learns about a hit, via listenForHits) — a reasonable next
+      // step, but out of scope here.
+      function applyHitFlash(rig: AnyRig, damageAt: number, nowMs: number) {
+        if (rig.kind !== 'procedural') return;
+        const elapsed = nowMs - damageAt;
+        if (damageAt > 0 && elapsed < 260) {
+          const k = 1 - elapsed / 260;
+          rig.suitMat.emissive.setRGB(k, 0, 0);
+          rig.suitMat.emissiveIntensity = k * 1.6;
+        } else {
+          rig.suitMat.emissive.setRGB(0, 0, 0);
+          rig.suitMat.emissiveIntensity = 0;
+        }
+      }
+
       // Characters
       let playerRig: AnyRig = createCharacter(playerSkin);
       scene.add(playerRig.group);
@@ -735,7 +953,9 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
       // unarmed-looking there for both local and remote players — a
       // known limitation). Shared by the local player and every remote
       // pool entry so everyone's held weapon renders for everyone.
-      interface HeldWeaponState { type: WeaponType | null; mesh: THREE.Object3D | null }
+      const HELD_WEAPON_SCALE = 0.55;
+      const POP_IN_MS = 220;
+      interface HeldWeaponState { type: WeaponType | null; mesh: THREE.Object3D | null; attachedAt: number }
       function updateHeldWeapon(rig: AnyRig, held: HeldWeaponState, desired: WeaponType | null | undefined) {
         const type = desired ?? null;
         if (type === held.type) return;
@@ -747,29 +967,63 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         if (type && rig.kind === 'procedural') {
           // Same weapon model used on the pedestal, scaled down and
           // rotated forward-and-down so it reads as gripped in the hand
-          // rather than floating loot.
+          // rather than floating loot. Starts at zero scale — see
+          // updateWeaponPop below, which grows it with a little bounce
+          // the moment it's equipped, instead of just appearing.
           const mesh = buildWeaponMesh(type);
-          mesh.scale.setScalar(0.55);
+          mesh.scale.setScalar(0.001);
           mesh.position.set(0.02, -0.36, -0.06);
           mesh.rotation.x = -Math.PI / 2 + 0.35;
           mesh.rotation.z = 0.1;
           rig.rArm.add(mesh);
           held.mesh = mesh;
+          held.attachedAt = Date.now();
         }
       }
-      const playerHeldWeapon: HeldWeaponState = { type: null, mesh: null };
+      // Small bounce-in scale so picking up/switching a weapon reads as an
+      // event instead of the model just popping into existence.
+      function updateWeaponPop(held: HeldWeaponState) {
+        if (!held.mesh) return;
+        const elapsed = Date.now() - held.attachedAt;
+        if (elapsed >= POP_IN_MS) {
+          held.mesh.scale.setScalar(HELD_WEAPON_SCALE);
+          return;
+        }
+        const t = elapsed / POP_IN_MS;
+        const eased = 1 - Math.pow(1 - t, 3);
+        const overshoot = 1 + Math.sin(t * Math.PI) * 0.18;
+        held.mesh.scale.setScalar(HELD_WEAPON_SCALE * eased * overshoot);
+      }
+      const playerHeldWeapon: HeldWeaponState = { type: null, mesh: null, attachedAt: 0 };
 
       interface PoolEntry {
         rig: AnyRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number;
         skinId: string; loading: boolean; heldWeapon: HeldWeaponState;
+        // Last attackedAt value we've already reacted to, so we only play
+        // the swing/fire animation once per genuine new attack. Seeded
+        // from the player's current value when first spotted (see the
+        // remote loop below) so we don't fire off a stale animation for
+        // an attack that happened before we started tracking them.
+        lastAttackAt: number;
       }
       const remotePool = new Map<string, PoolEntry>();
+      // Reused every frame via .clear() below — same reasoning as the
+      // camera vectors above, just for the remote-player presence check.
+      const seenRemotes = new Set<string>();
 
       // Camera
       const camPos = new THREE.Vector3(0, 6, 10);
       const camLook = new THREE.Vector3(0, 1.2, -4);
+      // Reused every frame via .set() below instead of `new THREE.Vector3(...)`
+      // — allocating fresh vectors 2x per frame (2 per animate() call, 60
+      // times a second) is exactly the kind of thing that triggers GC
+      // pauses and shows up as stutter on mobile JS engines. Big game
+      // engines never allocate inside the render loop for this reason.
+      const targetPos = new THREE.Vector3();
+      const targetLook = new THREE.Vector3();
       let legPhase = 0;
       let idlePhase = 0;
+      let lastLocalAttackAt = 0;
 
       // Animates one character rig in place: leg/arm swing while moving,
       // a gentle idle breathing bob while still, and jump squash & stretch.
@@ -828,7 +1082,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
             entry.loading = false;
             scene.remove(entry.rig.group);
             entry.rig = createModelRig(base);
-            entry.heldWeapon = { type: null, mesh: null }; // old prop was on the removed rig
+            entry.heldWeapon = { type: null, mesh: null, attachedAt: 0 }; // old prop was on the removed rig
             scene.add(entry.rig.group);
           })
           .catch(() => { entry.loading = false; });
@@ -838,6 +1092,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         rafRef.current = requestAnimationFrame(animate);
         const s = physStateRef.current;
         const delta = clock.getDelta();
+        const now = Date.now();
 
         // First-person hides the local player model (camera sits at its head)
         const mode = cameraModeRef.current;
@@ -849,10 +1104,24 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         animateRig(playerRig, s.x, s.y, s.z, s.facingAngle, s.vy, s.onGround, moving, legPhase, idlePhase, playerShadow);
         if (playerRig.kind === 'model') playerRig.mixer.update(delta);
         updateHeldWeapon(playerRig, playerHeldWeapon, currentWeaponRef.current);
+        updateWeaponPop(playerHeldWeapon);
+
+        // Local player attack — a new timestamp means a fresh attack
+        // attempt, so fire the one-off ranged effect (if any); the pose
+        // itself is (re)applied every frame for the rest of the window,
+        // layered on top of animateRig's walk-cycle arm swing above.
+        const localAtk = localAttackRef.current;
+        if (localAtk.at !== lastLocalAttackAt) {
+          lastLocalAttackAt = localAtk.at;
+          triggerAttackEffect(playerRig, localAtk.weapon);
+        }
+        if (playerRig.kind === 'procedural' && lastLocalAttackAt > 0 && now - lastLocalAttackAt < ATTACK_ANIM_MS) {
+          applyAttackPose(playerRig, localAtk.weapon, now - lastLocalAttackAt);
+        }
+        applyHitFlash(playerRig, localDamageAtRef.current, now);
 
         // PvP weapon crates — hidden while on cooldown, otherwise a slow
         // spin + bob so they read as "live" pickups.
-        const now = Date.now();
         for (const crate of crates) {
           const takenAt = weaponTakenAtRef.current[crate.id] ?? 0;
           const available = now - takenAt > WEAPON_RESPAWN_MS;
@@ -866,15 +1135,35 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           }
         }
 
+        // Fade/deactivate any active tracer or muzzle-flash effects
+        for (const slot of tracerPool) {
+          if (!slot.active) continue;
+          const elapsed = now - slot.start;
+          if (elapsed > TRACER_LIFE_MS) { slot.active = false; slot.mesh.visible = false; continue; }
+          (slot.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - elapsed / TRACER_LIFE_MS);
+        }
+        for (const slot of flashPool) {
+          if (!slot.active) continue;
+          const elapsed = now - slot.start;
+          if (elapsed > FLASH_LIFE_MS) { slot.active = false; slot.mesh.visible = false; continue; }
+          const ft = elapsed / FLASH_LIFE_MS;
+          (slot.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - ft;
+          slot.mesh.scale.setScalar(1 + ft * 0.8);
+        }
+
         const remotes = remotePlayersRef.current;
-        const seen = new Set<string>();
+        seenRemotes.clear();
         for (const rp of remotes) {
-          seen.add(rp.id);
+          seenRemotes.add(rp.id);
           const rpSkinId = rp.skinId ?? DEFAULT_SKIN_ID;
           const rpSkin = getSkin(rpSkinId);
           let entry = remotePool.get(rp.id);
           if (!entry) {
-            entry = { rig: createCharacter(rpSkin), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z, skinId: rpSkinId, loading: false, heldWeapon: { type: null, mesh: null } };
+            entry = {
+              rig: createCharacter(rpSkin), shadow: makeShadow(), legPhase: 0, lastX: rp.x, lastZ: rp.z,
+              skinId: rpSkinId, loading: false, heldWeapon: { type: null, mesh: null, attachedAt: 0 },
+              lastAttackAt: rp.attackedAt ?? 0,
+            };
             scene.add(entry.rig.group);
             remotePool.set(rp.id, entry);
             if (rpSkin.isModel) upgradeToModelWhenReady(entry);
@@ -883,11 +1172,23 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
             scene.remove(entry.rig.group);
             entry.rig = createCharacter(rpSkin);
             entry.skinId = rpSkinId;
-            entry.heldWeapon = { type: null, mesh: null }; // old prop was on the removed rig
+            entry.heldWeapon = { type: null, mesh: null, attachedAt: 0 }; // old prop was on the removed rig
             scene.add(entry.rig.group);
             if (rpSkin.isModel) upgradeToModelWhenReady(entry);
           }
           updateHeldWeapon(entry.rig, entry.heldWeapon, rp.weapon);
+          updateWeaponPop(entry.heldWeapon);
+
+          // Same new-timestamp-means-new-attack check as the local player,
+          // just sourced from the synced attackedAt field instead of a ref.
+          // (The pose itself is applied further below, after animateRig —
+          // otherwise animateRig's walk-cycle arm swing would immediately
+          // overwrite it.)
+          const rpAttackedAt = rp.attackedAt ?? 0;
+          if (rpAttackedAt !== entry.lastAttackAt) {
+            entry.lastAttackAt = rpAttackedAt;
+            triggerAttackEffect(entry.rig, rp.weapon);
+          }
           // Infer movement + facing from frame-to-frame position deltas,
           // since remote players only send us a position, not full physics.
           const ddx = rp.x - entry.lastX;
@@ -897,6 +1198,9 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           if (rMoving) entry.legPhase += 0.18;
           const rFacing = rMoving ? Math.atan2(ddx, ddz) : entry.rig.group.rotation.y;
           animateRig(entry.rig, rp.x, rp.y, rp.z, rFacing, 0, true, rMoving, entry.legPhase, 0, entry.shadow);
+          if (entry.rig.kind === 'procedural' && entry.lastAttackAt > 0 && now - entry.lastAttackAt < ATTACK_ANIM_MS) {
+            applyAttackPose(entry.rig, rp.weapon, now - entry.lastAttackAt);
+          }
           if (entry.rig.kind === 'model') entry.rig.mixer.update(delta);
           entry.rig.group.visible = true;
           entry.shadow.visible = true;
@@ -904,7 +1208,7 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           entry.lastZ = rp.z;
         }
         for (const [id, entry] of remotePool) {
-          if (!seen.has(id)) { entry.rig.group.visible = false; entry.shadow.visible = false; }
+          if (!seenRemotes.has(id)) { entry.rig.group.visible = false; entry.shadow.visible = false; }
         }
 
         // Free-look drag state — yaw turns left/right, pitch tilts up/down.
@@ -919,8 +1223,6 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
         const cosPitch = Math.cos(pitch);
         const sinPitch = Math.sin(pitch);
 
-        let targetPos: THREE.Vector3;
-        let targetLook: THREE.Vector3;
         let lerpSpeed = 0.07;
 
         if (mode === 'first') {
@@ -930,15 +1232,15 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           const lookDx = sinYaw * cosPitch;
           const lookDy = sinPitch;
           const lookDz = cosYaw * cosPitch;
-          targetPos = new THREE.Vector3(s.x, s.y + 1.6, s.z);
-          targetLook = new THREE.Vector3(s.x + lookDx * 5, s.y + 1.6 + lookDy * 5, s.z + lookDz * 5);
+          targetPos.set(s.x, s.y + 1.6, s.z);
+          targetLook.set(s.x + lookDx * 5, s.y + 1.6 + lookDy * 5, s.z + lookDz * 5);
           lerpSpeed = 0.45; // snappy — first-person look shouldn't lag behind the finger
         } else if (mode === 'top') {
           // Straight overhead, small Z nudge avoids a degenerate lookAt.
           // Yaw still rotates the compass direction of the view; pitch is
           // ignored here (staying perfectly overhead reads best).
-          targetPos = new THREE.Vector3(s.x + sinYaw * 0.01, s.y + 20, s.z + cosYaw * 0.01);
-          targetLook = new THREE.Vector3(s.x, s.y, s.z);
+          targetPos.set(s.x + sinYaw * 0.01, s.y + 20, s.z + cosYaw * 0.01);
+          targetLook.set(s.x, s.y, s.z);
         } else {
           // 'third' — orbiting chase camera: distance is fixed, yaw/pitch
           // (from the drag gesture) rotate it around the player. Defaults
@@ -946,12 +1248,12 @@ function NativeRenderer({ physStateRef, playerSkin, remotePlayersRef, cameraMode
           // behind-and-above view exactly. Pitch is kept positive by the
           // clamp in game.tsx, so the camera can never dip below the player.
           const ORBIT_DIST = 11.1;
-          targetPos = new THREE.Vector3(
+          targetPos.set(
             s.x + sinYaw * cosPitch * ORBIT_DIST,
             s.y + 1 + sinPitch * ORBIT_DIST,
             s.z + cosYaw * cosPitch * ORBIT_DIST,
           );
-          targetLook = new THREE.Vector3(s.x, s.y + 1, s.z);
+          targetLook.set(s.x, s.y + 1, s.z);
         }
 
         camPos.lerp(targetPos, lerpSpeed);
