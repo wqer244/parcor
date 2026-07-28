@@ -18,23 +18,19 @@ import { StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { VirtualJoystick } from './VirtualJoystick';
 
 interface Props {
-  onForwardStart: () => void;
-  onForwardEnd: () => void;
-  onBackStart: () => void;
-  onBackEnd: () => void;
-  onLeftStart: () => void;
-  onLeftEnd: () => void;
-  onRightStart: () => void;
-  onRightEnd: () => void;
+  // Camera-relative movement — see VirtualJoystick. Replaces the old
+  // 4-button D-pad (onForwardStart/onBackStart/onLeftStart/onRightStart)
+  // so the player never has to hold a "backward" button to walk toward
+  // something behind them, like the PvP arena.
+  onMove: (right: number, forward: number) => void;
   onJump: () => void;
   onJumpEnd?: () => void;
 }
 
 // ── Layout constants ─────────────────────────────────────────────────────────
-const BTN = 52;
-const GAP = 4;
 const JUMP_SIZE = 80;
 
 // ── A single "hold" button: fires onStart the instant a finger touches it,
@@ -97,13 +93,7 @@ function HoldButton({
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function GameControls({
-  onForwardStart, onForwardEnd,
-  onBackStart, onBackEnd,
-  onLeftStart, onLeftEnd,
-  onRightStart, onRightEnd,
-  onJump, onJumpEnd,
-}: Props) {
+export function GameControls({ onMove, onJump, onJumpEnd }: Props) {
   const insets = useSafeAreaInsets();
 
   return (
@@ -114,24 +104,9 @@ export function GameControls({
       ]}
       pointerEvents="box-none"
     >
-      {/* ── D-pad ─────────────────────────────────────────────────────── */}
-      <View style={styles.dpad}>
-        <View style={styles.dpadRow}>
-          <View style={styles.dpadSpacer} />
-          <HoldButton icon="arrow-up" size={BTN} onStart={onForwardStart} onEnd={onForwardEnd} />
-          <View style={styles.dpadSpacer} />
-        </View>
-        <View style={styles.dpadRow}>
-          <HoldButton icon="arrow-back" size={BTN} onStart={onLeftStart} onEnd={onLeftEnd} />
-          <View style={[styles.dirBtn, styles.dpadCenter, { width: BTN, height: BTN }]} />
-          <HoldButton icon="arrow-forward" size={BTN} onStart={onRightStart} onEnd={onRightEnd} />
-        </View>
-        <View style={styles.dpadRow}>
-          <View style={styles.dpadSpacer} />
-          <HoldButton icon="arrow-down" size={BTN} onStart={onBackStart} onEnd={onBackEnd} />
-          <View style={styles.dpadSpacer} />
-        </View>
-      </View>
+      {/* ── Joystick — drag any direction to walk that way relative to
+          wherever the camera is currently facing ─────────────────── */}
+      <VirtualJoystick onMove={onMove} />
 
       {/* ── Jump button ───────────────────────────────────────────────── */}
       <HoldButton
@@ -154,14 +129,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-end',
-    height: BTN * 3 + GAP * 2,
-  },
-  dpad: { flexDirection: 'column', gap: GAP },
-  dpadRow: { flexDirection: 'row', gap: GAP, alignItems: 'center' },
-  dpadSpacer: { width: BTN, height: BTN },
-  dpadCenter: {
-    borderRadius: 10,
-    backgroundColor: 'rgba(0,255,204,0.04)',
+    height: 118,
   },
   dirBtn: {
     backgroundColor: 'rgba(0,255,204,0.10)',
