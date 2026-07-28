@@ -28,6 +28,7 @@ export interface PvPState {
   weaponTakenAt: Record<string, number>; // weaponId -> last-taken timestamp, for crate visibility
   nearestWeaponId: string | null;         // in pickup range right now, if any
   justDied: boolean;                       // one-frame flag the screen can use for feedback
+  lastDamageAt: number;                    // Date.now() of the most recent hit taken, for hit-flash feedback
 }
 
 export function usePvP(playerId: string) {
@@ -36,6 +37,7 @@ export function usePvP(playerId: string) {
   const [currentWeapon, setCurrentWeapon] = useState<WeaponType | null>(null);
   const [weaponTakenAt, setWeaponTakenAt] = useState<Record<string, number>>({});
   const [nearestWeaponId, setNearestWeaponId] = useState<string | null>(null);
+  const [lastDamageAt, setLastDamageAt] = useState(0);
 
   const healthRef = useRef(health);
   healthRef.current = health;
@@ -48,6 +50,7 @@ export function usePvP(playerId: string) {
     if (!playerId) return;
     const unsub = listenForHits(playerId, (damage) => {
       setHealth((h) => Math.max(0, h - damage));
+      setLastDamageAt(Date.now());
     });
     return unsub;
   }, [playerId]);
@@ -152,6 +155,7 @@ export function usePvP(playerId: string) {
     weaponTakenAt,
     nearestWeaponId,
     justDied: false,
+    lastDamageAt,
   };
 
   return { ...state, updatePosition, attack, pickupNearestWeapon, consumeRespawn };
