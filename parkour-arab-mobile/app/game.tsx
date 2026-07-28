@@ -3,6 +3,7 @@
 // ────────────────────────────────────────────────────────
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   Modal,
   Platform,
   Pressable,
@@ -28,6 +29,7 @@ import {
   Input3D,
   FINISH_DISTANCE,
   WEAPON_DEFS,
+  WeaponType,
 } from '@/services/game3DPhysics';
 import { SKINS, getSkin } from '@/constants/skins';
 import { usePvP } from '@/hooks/usePvP';
@@ -38,7 +40,7 @@ function makeInitState(): PhysState3D {
 
 export default function GameScreen() {
   const insets = useSafeAreaInsets();
-  const { playerId, playerColor, playerSkinId, playerName, remotePlayers, joinServer, leaveServer, syncPosition, setPlayerSkin, setPlayerWeapon } =
+  const { playerId, playerColor, playerSkinId, playerName, remotePlayers, joinServer, leaveServer, syncPosition, setPlayerSkin, setPlayerWeapon, notifyAttack } =
     usePlayer();
   const playerSkin = getSkin(playerSkinId);
   const pvp = usePvP(playerId);
@@ -50,10 +52,34 @@ export default function GameScreen() {
   useEffect(() => { weaponTakenAtRef.current = pvp.weaponTakenAt; }, [pvp.weaponTakenAt]);
   useEffect(() => { currentWeaponRef.current = pvp.currentWeapon; }, [pvp.currentWeapon]);
   useEffect(() => { setPlayerWeapon(pvp.currentWeapon); }, [pvp.currentWeapon, setPlayerWeapon]);
+  // Drives the swing/fire animation on the local rig (set in doAttack
+  // below) and the red hit-flash when damage comes in (kept in sync with
+  // the hook's lastDamageAt) — see GameRenderer3D's animate loop.
+  const localAttackRef = useRef<{ at: number; weapon: WeaponType | null }>({ at: 0, weapon: null });
+  const localDamageAtRef = useRef(0);
+  useEffect(() => { localDamageAtRef.current = pvp.lastDamageAt; }, [pvp.lastDamageAt]);
+
+  // Screen-space feedback — a quick red pulse when hit, a white pulse on
+  // respawn. Driven by Animated directly (not React state) so it's a real
+  // smooth fade regardless of the HUD's own re-render cadence.
+  const hitFlashOpacity = useRef(new Animated.Value(0)).current;
+  const respawnFlashOpacity = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (pvp.lastDamageAt === 0) return;
+    hitFlashOpacity.stopAnimation();
+    hitFlashOpacity.setValue(0.4);
+    Animated.timing(hitFlashOpacity, { toValue: 0, duration: 380, useNativeDriver: true }).start();
+  }, [pvp.lastDamageAt, hitFlashOpacity]);
 
   // Refs — updated every frame without re-render
   const physRef = useRef<PhysState3D>(makeInitState());
   const inputRef = useRef<Input3D>({ forward: false, backward: false, left: false, right: false, jump: false });
+  // Raw joystick push, in screen-relative units (-1..1): x = right push,
+  // y = forward push (up = positive). Rotated into a world-space move
+  // vector every physics tick below, using the *current* camera yaw — not
+  // just once when the stick moves — so movement direction stays correct
+  // even while the player is mid-drag looking around with the other hand.
+  const joystickPushRef = useRef({ x: 0, y: 0 });
   const frameRef = useRef(0);
   const remotePlayersRef = useRef<RemotePlayer3D[]>([]);
   const cameraModeRef = useRef<CameraMode>('third');
@@ -108,6 +134,7 @@ export default function GameScreen() {
       color: rp.color,
       skinId: rp.skinId,
       weapon: rp.weapon,
+      attackedAt: rp.attackedAt,
       name: rp.name,
     }));
     setOnlinePlayers(remotePlayers.length + 1);
@@ -135,6 +162,23 @@ export default function GameScreen() {
   // Physics loop — 30 fps
   useEffect(() => {
     const loop = setInterval(() => {
+      // Rotate the joystick's screen-relative push by the camera's
+      // current yaw so "push up" always means "walk toward what the
+      // camera is looking at" — this is what lets the player walk into
+      // the arena (or anywhere else) just by looking at it and pushing
+      // forward, with no separate "backward" button needed.
+      const jp = joystickPushRef.current;
+      if (jp.x !== 0 || jp.y !== 0) {
+        const yaw = orbitYawRef.current;
+        const sinYaw = Math.sin(yaw);
+        const cosYaw = Math.cos(yaw);
+        inputRef.current.moveX = jp.y * -sinYaw + jp.x * cosYaw;
+        inputRef.current.moveZ = jp.y * -cosYaw + jp.x * -sinYaw;
+      } else {
+        inputRef.current.moveX = 0;
+        inputRef.current.moveZ = 0;
+      }
+
       const inp = inputRef.current;
       const next = stepPhysics3D(physRef.current, inp);
       physRef.current = next;
@@ -147,6 +191,9 @@ export default function GameScreen() {
       const respawn = pvp.consumeRespawn();
       if (respawn) {
         physRef.current = { ...physRef.current, x: respawn.x, y: respawn.y, z: respawn.z, vx: 0, vy: 0, vz: 0 };
+        respawnFlashOpacity.stopAnimation();
+        respawnFlashOpacity.setValue(0.65);
+        Animated.timing(respawnFlashOpacity, { toValue: 0, duration: 550, useNativeDriver: true }).start();
       }
 
       // Finish detection
@@ -171,19 +218,18 @@ export default function GameScreen() {
   }, [syncPosition, hasFinished]);
 
   // Input helpers
-  const startForward  = () => { inputRef.current.forward  = true; };
-  const stopForward   = () => { inputRef.current.forward  = false; };
-  const startBackward = () => { inputRef.current.backward = true; };
-  const stopBackward  = () => { inputRef.current.backward = false; };
-  const startLeft     = () => { inputRef.current.left     = true; };
-  const stopLeft      = () => { inputRef.current.left     = false; };
-  const startRight    = () => { inputRef.current.right    = true; };
-  const stopRight     = () => { inputRef.current.right    = false; };
-  const doJump        = () => { inputRef.current.jump     = true; };
+  const handleJoystickMove = (right: number, forward: number) => {
+    joystickPushRef.current = { x: right, y: forward };
+  };
+  const doJump = () => { inputRef.current.jump = true; };
 
   const doAttack = () => {
     const s = physRef.current;
-    pvp.attack(s.x, s.z, s.facingAngle, remotePlayersRef.current);
+    const performed = pvp.attack(s.x, s.z, s.facingAngle, remotePlayersRef.current);
+    if (performed) {
+      localAttackRef.current = { at: Date.now(), weapon: pvp.currentWeapon };
+      notifyAttack();
+    }
   };
   const doPickup = () => { pvp.pickupNearestWeapon(); };
 
@@ -197,6 +243,7 @@ export default function GameScreen() {
   const restart = () => {
     physRef.current = makeInitState();
     inputRef.current = { forward: false, backward: false, left: false, right: false, jump: false };
+    joystickPushRef.current = { x: 0, y: 0 };
     setHasFinished(false);
   };
 
@@ -217,6 +264,20 @@ export default function GameScreen() {
         orbitPitchRef={orbitPitchRef}
         weaponTakenAtRef={weaponTakenAtRef}
         currentWeaponRef={currentWeaponRef}
+        localAttackRef={localAttackRef}
+        localDamageAtRef={localDamageAtRef}
+      />
+
+      {/* ── Damage / respawn screen flashes ─────────────
+          Sit above the 3D view, below every touch layer (pointerEvents
+          none so they never intercept taps). */}
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.screenFlash, { backgroundColor: '#ff1a1a', opacity: hitFlashOpacity }]}
+      />
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.screenFlash, { backgroundColor: '#ffffff', opacity: respawnFlashOpacity }]}
       />
 
       {/* ── Free-look drag layer ────────────────────────
@@ -299,10 +360,7 @@ export default function GameScreen() {
 
       {/* ── Controls ────────────────────────────────── */}
       <GameControls
-        onForwardStart={startForward}  onForwardEnd={stopForward}
-        onBackStart={startBackward}    onBackEnd={stopBackward}
-        onLeftStart={startLeft}        onLeftEnd={stopLeft}
-        onRightStart={startRight}      onRightEnd={stopRight}
+        onMove={handleJoystickMove}
         onJump={doJump}
       />
 
@@ -389,6 +447,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: '#06060f',
+  },
+  screenFlash: {
+    ...StyleSheet.absoluteFillObject,
   },
   hud: {
     position: 'absolute',
