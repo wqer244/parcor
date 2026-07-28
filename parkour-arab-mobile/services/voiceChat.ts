@@ -26,12 +26,11 @@
 //    native code is present.
 // 2. Run a real EAS/dev build (`expo run:android` / `expo run:ios`, or an
 //    EAS dev-client build) — NOT Expo Go.
-// 3. Agora App ID `af3d133c3cbe403895240eafde8e6d5b` was already in the old
-//    placeholder code. For joining WITHOUT a token server (simplest path),
-//    open this project in the Agora Console → Project Management → make
-//    sure "App Certificate" is DISABLED (primary-certificate-free / testing
-//    mode). If a certificate is enabled, every joinChannel call needs a
-//    signed token from a backend server.
+// 3. This project's Agora App Certificate is enabled and can't be turned
+//    back off, so every join needs a real signed token. That token is now
+//    fetched fresh from a small serverless endpoint (see
+//    agora-token-vercel/) instead of being hardcoded here — deploy that
+//    once on Vercel, then set TOKEN_ENDPOINT below to its URL.
 // 4. react-native-agora's exact API can shift slightly between versions.
 //    If the build fails on an unfamiliar method/type name from this file,
 //    check node_modules/react-native-agora's TypeScript defs.
@@ -67,15 +66,38 @@ export function isVoiceAvailable(): boolean {
   return AgoraModule != null;
 }
 
-const AGORA_APP_ID = 'af3d133c3cbe403895240eafde8e6d5b';
+const AGORA_APP_ID = '5b677e06373d435ab2f38479dcb764c4'; // "parcor-voice" project
 
-// Long-lived token (10-year expiry) generated once via the agora-token
-// library, using the project's App ID + App Certificate. This is scoped to
-// the exact channel name below — it will NOT work for any other channel.
-// This is the permanent replacement for the old 24h temp token.
-const LONG_LIVED_TOKEN =
-  '007eJxTYDjF29nBn/NewkhNV7w/i3v/l3Mbb8w5y3NRX/jju4jps68qMCSmGacYGhsnGycnpZoYGFtYmhqZGKQmpqWkWqSapZgm+TOnZTEwnxFy6bjFysjAyMACxCA+E5hkBpMsYJKfoSCxKDu/tEg3sSgxSdc4hYEBACbpJkI=';
-const LONG_LIVED_CHANNEL = 'parkour-arab-3d';
+// ── Token server ─────────────────────────────────────────────────────────
+// A hardcoded token (even a "10-year" one) is exactly what Agora's abuse
+// detection flags — tokens are meant to be short-lived, minted per
+// session, not baked into the app forever. So instead of a constant
+// token, every join now fetches a fresh one (1h expiry) from a small
+// serverless endpoint that holds the App Certificate server-side — see
+// agora-token-vercel/api/agora-token.js for the endpoint itself and full
+// deploy steps (Vercel — no billing-plan upgrade needed, unlike Firebase
+// Cloud Functions). This also means the App Certificate (the actual
+// secret) never ships inside the app bundle anymore, unlike the old
+// approach.
+//
+// ⚠️ Deploy that endpoint first, then paste its URL here.
+const TOKEN_ENDPOINT = 'https://severe-parcor.vercel.app/api/agora-token';
+
+async function fetchAgoraToken(channelName: string, uid: number): Promise<string | null> {
+  if (!TOKEN_ENDPOINT || TOKEN_ENDPOINT.startsWith('PASTE_')) {
+    console.warn('[voiceChat] TOKEN_ENDPOINT not configured yet — deploy agora-token-vercel first.');
+    return null;
+  }
+  try {
+    const res = await fetch(`${TOKEN_ENDPOINT}?channel=${encodeURIComponent(channelName)}&uid=${uid}`);
+    if (!res.ok) throw new Error(`token endpoint returned HTTP ${res.status}`);
+    const data = await res.json();
+    return typeof data.token === 'string' ? data.token : null;
+  } catch (err) {
+    console.warn('[voiceChat] failed to fetch Agora token:', err);
+    return null;
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let engine: any = null;
@@ -220,10 +242,14 @@ export async function joinVoiceChannel(channelName: string, uid: number): Promis
 
     const { ClientRoleType } = AgoraModule;
 
-    // Empty token only works when no App Certificate is set; this project
-    // HAS a certificate, so we use the 10-year token generated for this
-    // specific channel name instead.
-    const token = channelName === LONG_LIVED_CHANNEL ? LONG_LIVED_TOKEN : '';
+    const token = await fetchAgoraToken(channelName, uid);
+    if (!token) {
+      setStatus({
+        state: 'error',
+        message: 'تعذر الحصول على تصريح الدخول من الخادم — تأكد من نشر agora-token-vercel ووضع رابطه بـ TOKEN_ENDPOINT',
+      });
+      return false;
+    }
     e.joinChannel(token, channelName, uid, {
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
