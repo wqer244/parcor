@@ -30,6 +30,11 @@ export interface RemotePlayer {
   color: string;
   skinId?: string;
   weapon?: WeaponType | null;
+  // Timestamp (Date.now()) of this player's most recent attack/attempt —
+  // written eagerly (see notifyAttack below), so other clients can play
+  // the same swing/fire animation on this player's rig almost instantly,
+  // instead of waiting for it to show up as damage.
+  attackedAt?: number;
   name: string;
   serverId: string;
   lastUpdate: number;
@@ -47,6 +52,7 @@ interface PlayerContextValue {
   syncPosition: (x: number, y: number, z: number, vx: number, vy: number, vz: number) => void;
   setPlayerSkin: (skinId: string) => Promise<void>;
   setPlayerWeapon: (weapon: WeaponType | null) => void;
+  notifyAttack: () => void;
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -64,6 +70,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playerColorRef = useRef(playerColor);
   const playerSkinIdRef = useRef(playerSkinId);
   const playerWeaponRef = useRef<WeaponType | null>(null);
+  const playerAttackedAtRef = useRef<number>(0);
   const playerNameRef = useRef(playerName);
   const playerIdRef = useRef('');
 
@@ -141,6 +148,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         color: playerColorRef.current,
         skinId: playerSkinIdRef.current,
         weapon: playerWeaponRef.current,
+        attackedAt: 0,
         name: playerNameRef.current || 'لاعب',
         serverId,
         lastUpdate: Date.now(),
@@ -189,6 +197,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         color: playerColorRef.current,
         skinId: playerSkinIdRef.current,
         weapon: playerWeaponRef.current,
+        attackedAt: playerAttackedAtRef.current,
         name: playerNameRef.current || 'لاعب',
         serverId: currentServerRef.current,
         lastUpdate: Date.now(),
@@ -209,6 +218,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Called once per attack attempt (see usePvP's attack()). Written eagerly
+  // to its own sub-path — same reasoning as setPlayerWeapon — so remote
+  // clients can play this player's swing/fire animation right away rather
+  // than waiting up to ~100ms for the next throttled position tick.
+  const notifyAttack = useCallback(() => {
+    const t = Date.now();
+    playerAttackedAtRef.current = t;
+    const id = playerIdRef.current;
+    if (id && currentServerRef.current) {
+      set(ref(db, `game3d/players/${id}/attackedAt`), t).catch(() => {});
+    }
+  }, []);
+
   return (
     <PlayerContext.Provider
       value={{
@@ -223,6 +245,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         syncPosition,
         setPlayerSkin,
         setPlayerWeapon,
+        notifyAttack,
       }}
     >
       {children}
