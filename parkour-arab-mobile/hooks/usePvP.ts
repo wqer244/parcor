@@ -147,6 +147,36 @@ export function usePvP(playerId: string) {
     [inArena, currentWeapon, playerId],
   );
 
+  // Precision shot at a specific, explicitly-locked target (see the aim/
+  // target-lock system in game.tsx) — only a range check applies, no
+  // facing-arc requirement, since the player deliberately aimed the
+  // camera at this exact opponent through the zoom/lock UI rather than
+  // relying on a "swing and hope something's in the cone" attack.
+  const attackTarget = useCallback(
+    (targetId: string, x: number, z: number, remotes: RemotePlayer3D[]) => {
+      if (!inArena) return false;
+      const now = Date.now();
+      if (now - lastAttackRef.current < ATTACK_COOLDOWN_MS) return false;
+
+      const target = remotes.find((r) => r.id === targetId);
+      if (!target) return false;
+
+      const def = currentWeapon ? WEAPON_DEFS[currentWeapon] : null;
+      const range = def ? def.range : MELEE_RANGE;
+      const damage = def ? def.damage : MELEE_DAMAGE;
+
+      const dx = target.x - x;
+      const dz = target.z - z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist > range) return false;
+
+      lastAttackRef.current = now;
+      sendHit(target.id, playerId, damage);
+      return true;
+    },
+    [inArena, currentWeapon, playerId],
+  );
+
   const state: PvPState = {
     health,
     maxHealth: PVP_MAX_HEALTH,
@@ -158,5 +188,5 @@ export function usePvP(playerId: string) {
     lastDamageAt,
   };
 
-  return { ...state, updatePosition, attack, pickupNearestWeapon, consumeRespawn };
+  return { ...state, updatePosition, attack, attackTarget, pickupNearestWeapon, consumeRespawn };
 }
