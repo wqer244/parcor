@@ -59,6 +59,13 @@ interface Props {
   // Date.now() of the last hit the local player took — drives a brief
   // red hit-flash on their own model.
   localDamageAtRef: React.MutableRefObject<number>;
+  // True while the local player is holding the "aim" button — drives the
+  // camera FOV zoom (in every camera mode) that backs the aim/target-lock
+  // system in game.tsx.
+  isAimingRef?: React.MutableRefObject<boolean>;
+  // id of the remote player currently locked as the aim target (or null)
+  // — drives the floating lock-on reticle drawn above their head.
+  aimTargetIdRef?: React.MutableRefObject<string | null>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -599,6 +606,13 @@ function buildWeaponMesh(type: WeaponType): THREE.Group {
       grip.position.set(0, 0.24, 0.08);
       grip.rotation.x = -0.25;
       group.add(grip);
+      // Muzzle marker — an invisible pivot right at the barrel tip. Every
+      // ranged weapon gets one of these; it's what fireRangedEffect uses
+      // to spawn the tracer/flash from the actual gun, not the hand.
+      const muzzle = new THREE.Object3D();
+      muzzle.position.set(0, 0.47, -0.47);
+      group.add(muzzle);
+      group.userData.muzzle = muzzle;
       break;
     }
     case 'bow': {
@@ -613,6 +627,11 @@ function buildWeaponMesh(type: WeaponType): THREE.Group {
       const gripWrap = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), accentMat);
       gripWrap.position.y = 0.42;
       group.add(gripWrap);
+      // Arrow release point, just past the string.
+      const muzzle = new THREE.Object3D();
+      muzzle.position.set(0, 0.42, -0.5);
+      group.add(muzzle);
+      group.userData.muzzle = muzzle;
       break;
     }
     case 'staff': {
@@ -626,6 +645,11 @@ function buildWeaponMesh(type: WeaponType): THREE.Group {
       ring.position.y = 0.87;
       ring.rotation.x = Math.PI / 3;
       group.add(ring);
+      // Bolts channel out through the orb at the top of the staff.
+      const muzzle = new THREE.Object3D();
+      muzzle.position.set(0, 0.92, 0);
+      group.add(muzzle);
+      group.userData.muzzle = muzzle;
       break;
     }
     case 'railgun': {
@@ -647,6 +671,10 @@ function buildWeaponMesh(type: WeaponType): THREE.Group {
       const stock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.22), darkMat);
       stock.position.set(0, 0.4, 0.36);
       group.add(stock);
+      const muzzle = new THREE.Object3D();
+      muzzle.position.set(0, 0.47, -0.78);
+      group.add(muzzle);
+      group.userData.muzzle = muzzle;
       break;
     }
   }
@@ -717,6 +745,7 @@ function WebPlaceholder() {
 function NativeRenderer({
   physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef,
   weaponTakenAtRef, currentWeaponRef, localAttackRef, localDamageAtRef,
+  isAimingRef, aimTargetIdRef,
 }: Props) {
   const rafRef = useRef<number>(0);
 
@@ -733,7 +762,15 @@ function NativeRenderer({
       const scene = new THREE.Scene();
       scene.fog = new THREE.FogExp2(0x06060f, 0.016);
 
-      const camera = new THREE.PerspectiveCamera(62, W / H, 0.1, 400);
+      const DEFAULT_FOV = 62;
+      const AIM_FOV = 34; // narrower FOV = "zoomed in" while aiming, in every camera mode
+      const camera = new THREE.PerspectiveCamera(DEFAULT_FOV, W / H, 0.1, 400);
+      // The first-person view-model (added further below) is parented to
+      // the camera itself. Three.js's render() only traverses the scene
+      // graph passed as its first argument, so the camera has to be part
+      // of that graph for a camera-child object to ever be visited/drawn
+      // — otherwise the viewmodel would silently never render.
+      scene.add(camera);
 
       // Lights — hemisphere gives a soft sky/ground colour gradient instead
       // of a flat ambient wash, which reads much less "empty" on screen.
@@ -849,12 +886,18 @@ function NativeRenderer({
       let flashCursor = 0;
       const muzzleScratch = new THREE.Vector3(); // reused every shot — see fireRangedEffect
 
-      // Fires a tracer + muzzle flash from a rig's gun hand, in the exact
+      // Fires a tracer + muzzle flash from the weapon's own muzzle point
+      // (see the `muzzle` Object3D added per ranged weapon in
+      // buildWeaponMesh above) — NOT the shoulder/hand — in the exact
       // direction the rig is currently facing (rig.group's own -Z axis —
       // getWorldPosition/quaternion do the correct math regardless of
-      // parent transforms, so no manual trig needed here).
-      function fireRangedEffect(rig: CharacterRig, colorHex: number, range: number) {
-        rig.rArm.getWorldPosition(muzzleScratch);
+      // parent transforms, so no manual trig needed here). Falls back to
+      // the gun hand only if a weapon mesh/muzzle genuinely isn't
+      // available yet (e.g. the very first frame after equipping).
+      function fireRangedEffect(rig: CharacterRig, heldMesh: THREE.Object3D | null, colorHex: number, range: number) {
+        const muzzle = (heldMesh?.userData?.muzzle as THREE.Object3D | undefined) ?? null;
+        if (muzzle) muzzle.getWorldPosition(muzzleScratch);
+        else rig.rArm.getWorldPosition(muzzleScratch);
 
         const t = tracerPool[tracerCursor];
         tracerCursor = (tracerCursor + 1) % EFFECT_POOL_SIZE;
@@ -882,10 +925,10 @@ function NativeRenderer({
       // remote) — fires the one-off ranged effect if applicable. The
       // per-frame pose (swing/recoil) is applied separately every frame
       // for the animation's duration, see applyAttackPose below.
-      function triggerAttackEffect(rig: AnyRig, weaponType: WeaponType | null | undefined) {
+      function triggerAttackEffect(rig: AnyRig, heldMesh: THREE.Object3D | null, weaponType: WeaponType | null | undefined) {
         if (rig.kind !== 'procedural') return; // model rig has no puppeteerable gun hand — known limitation
         const def = weaponType ? WEAPON_DEFS[weaponType] : null;
-        if (def?.ranged) fireRangedEffect(rig, cssHex(def.color), def.range);
+        if (def?.ranged) fireRangedEffect(rig, heldMesh, cssHex(def.color), def.range);
       }
 
       // Drives the arm/torso pose for the attack animation every frame it
@@ -995,6 +1038,89 @@ function NativeRenderer({
         held.mesh.scale.setScalar(HELD_WEAPON_SCALE * eased * overshoot);
       }
       const playerHeldWeapon: HeldWeaponState = { type: null, mesh: null, attachedAt: 0 };
+
+      // ── First-person view-model ──────────────────────────────────
+      // A small hand+weapon rig parented straight to the camera (not the
+      // world), so it always renders in the same spot on screen no
+      // matter where the player is — the standard "gun in the corner of
+      // the screen" every FPS/battle-royale game uses. The camera never
+      // needs to be added to `scene` for this to work: three's renderer
+      // updates a parent-less camera's matrixWorld every frame on its
+      // own, which cascades down to vmGroup automatically.
+      const vmArmMat = new THREE.MeshStandardMaterial({
+        color: cssHex(playerSkin.skin), roughness: 0.7, metalness: 0.0,
+      });
+      const vmSleeveMat = new THREE.MeshStandardMaterial({
+        color: cssHex(playerSkin.suit), metalness: 0.6, roughness: 0.4,
+      });
+      const vmGroup = new THREE.Group();
+      vmGroup.position.set(0.28, -0.28, -0.55);
+      camera.add(vmGroup);
+
+      const vmSleeve = new THREE.Mesh(new THREE.CapsuleGeometry(0.075, 0.3, 6, 10), vmSleeveMat);
+      vmSleeve.rotation.z = Math.PI / 2.4;
+      vmSleeve.position.set(0.08, -0.02, 0.32);
+      vmGroup.add(vmSleeve);
+      const vmHand = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10), vmArmMat);
+      vmHand.position.set(-0.02, -0.06, 0.12);
+      vmGroup.add(vmHand);
+
+      const vmWeaponAnchor = new THREE.Group();
+      vmGroup.add(vmWeaponAnchor);
+      let vmWeaponType: WeaponType | null = null;
+      let vmWeaponMesh: THREE.Object3D | null = null;
+      let vmAttachedAt = 0;
+      const VM_SCALE = 0.85;
+
+      // Swaps the visible view-model weapon whenever the equipped weapon
+      // type changes — mirrors updateHeldWeapon's world-space logic but
+      // targets the camera-parented anchor instead of a rig's arm.
+      function updateViewModelWeapon(type: WeaponType | null) {
+        if (type === vmWeaponType) return;
+        vmWeaponType = type;
+        if (vmWeaponMesh) { vmWeaponAnchor.remove(vmWeaponMesh); vmWeaponMesh = null; }
+        if (type) {
+          const mesh = buildWeaponMesh(type);
+          mesh.scale.setScalar(0.001);
+          mesh.rotation.x = -Math.PI / 2 + 0.4;
+          mesh.position.set(0, -0.08, 0.05);
+          vmWeaponAnchor.add(mesh);
+          vmWeaponMesh = mesh;
+          vmAttachedAt = Date.now();
+        }
+      }
+      // Same little bounce-in pop as the world-space held weapon, so
+      // switching weapons in first-person reads as an event too.
+      function updateViewModelPop() {
+        if (!vmWeaponMesh) return;
+        const elapsed = Date.now() - vmAttachedAt;
+        if (elapsed >= POP_IN_MS) { vmWeaponMesh.scale.setScalar(VM_SCALE); return; }
+        const t = elapsed / POP_IN_MS;
+        const eased = 1 - Math.pow(1 - t, 3);
+        const overshoot = 1 + Math.sin(t * Math.PI) * 0.18;
+        vmWeaponMesh.scale.setScalar(VM_SCALE * eased * overshoot);
+      }
+
+      // ── Aim / target-lock reticle ────────────────────────────────
+      // A small billboarded ring + downward chevron that hovers above
+      // whichever remote player is currently locked by the aim system in
+      // game.tsx (aimTargetIdRef) — the in-world half of the "select a
+      // player and shoot them" targeting UI (the name/health readout is
+      // drawn as a 2D HUD element in game.tsx, above the crosshair).
+      const lockRingMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+      const lockRing = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.28, 24), lockRingMat);
+      lockRing.visible = false;
+      scene.add(lockRing);
+      const lockChevronMat = new THREE.MeshBasicMaterial({ color: 0xff5555, transparent: true, opacity: 0.95 });
+      const lockChevron = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.1, 4), lockChevronMat);
+      lockChevron.visible = false;
+      scene.add(lockChevron);
+      // Reused every frame for the reticle's billboard spin — mutating
+      // .rotation.z directly after a .quaternion.copy() would silently
+      // get overwritten by Euler/quaternion resync, so the spin has to
+      // be applied as a proper quaternion multiply instead.
+      const LOCK_SPIN_AXIS = new THREE.Vector3(0, 0, 1);
+      const lockSpinQ = new THREE.Quaternion();
 
       interface PoolEntry {
         rig: AnyRig; shadow: THREE.Mesh; legPhase: number; lastX: number; lastZ: number;
@@ -1113,7 +1239,7 @@ function NativeRenderer({
         const localAtk = localAttackRef.current;
         if (localAtk.at !== lastLocalAttackAt) {
           lastLocalAttackAt = localAtk.at;
-          triggerAttackEffect(playerRig, localAtk.weapon);
+          triggerAttackEffect(playerRig, playerHeldWeapon.mesh, localAtk.weapon);
         }
         if (playerRig.kind === 'procedural' && lastLocalAttackAt > 0 && now - lastLocalAttackAt < ATTACK_ANIM_MS) {
           applyAttackPose(playerRig, localAtk.weapon, now - lastLocalAttackAt);
@@ -1187,7 +1313,7 @@ function NativeRenderer({
           const rpAttackedAt = rp.attackedAt ?? 0;
           if (rpAttackedAt !== entry.lastAttackAt) {
             entry.lastAttackAt = rpAttackedAt;
-            triggerAttackEffect(entry.rig, rp.weapon);
+            triggerAttackEffect(entry.rig, entry.heldWeapon.mesh, rp.weapon);
           }
           // Infer movement + facing from frame-to-frame position deltas,
           // since remote players only send us a position, not full physics.
@@ -1211,6 +1337,26 @@ function NativeRenderer({
           if (!seenRemotes.has(id)) { entry.rig.group.visible = false; entry.shadow.visible = false; }
         }
 
+        // Aim lock-on reticle — shown above the currently-locked target's
+        // head (if any, and if they're still on screen this frame),
+        // billboarded to always face the camera.
+        const lockedId = aimTargetIdRef?.current ?? null;
+        const lockedEntry = lockedId ? remotePool.get(lockedId) : undefined;
+        if (lockedEntry && lockedEntry.rig.group.visible) {
+          const headPos = lockedEntry.rig.group.position;
+          lockRing.position.set(headPos.x, headPos.y + 2.05, headPos.z);
+          lockRing.quaternion.copy(camera.quaternion);
+          lockRing.quaternion.multiply(lockSpinQ.setFromAxisAngle(LOCK_SPIN_AXIS, now / 400)); // slow spin reads as "actively tracking"
+          lockRing.visible = true;
+          lockChevron.position.set(headPos.x, headPos.y + 2.32, headPos.z);
+          lockChevron.quaternion.copy(camera.quaternion);
+          lockChevron.quaternion.multiply(lockSpinQ.setFromAxisAngle(LOCK_SPIN_AXIS, Math.PI)); // point down at the ring
+          lockChevron.visible = true;
+        } else {
+          lockRing.visible = false;
+          lockChevron.visible = false;
+        }
+
         // Free-look drag state — yaw turns left/right, pitch tilts up/down.
         // This is set by a finger-drag gesture in game.tsx (see the
         // full-screen GestureDetector there) and is independent of which
@@ -1229,9 +1375,30 @@ function NativeRenderer({
           // Eyes-level; look direction comes straight from the drag (yaw =
           // turn left/right, pitch = look up/down), not from facingAngle —
           // so you can look around freely while walking in any direction.
-          const lookDx = sinYaw * cosPitch;
-          const lookDy = sinPitch;
-          const lookDz = cosYaw * cosPitch;
+          //
+          // IMPORTANT: this must use the exact same "yaw=0 → -Z" forward
+          // convention as the third-person camera below (and as the
+          // joystick's world-space rotation in game.tsx) — otherwise
+          // pushing the stick "forward" walks the player straight away
+          // from where the first-person camera is actually looking, i.e.
+          // backward on screen. Third-person's forward is -(sinYaw,cosYaw)
+          // (camera sits at +(sinYaw,cosYaw) behind the player, looking
+          // back at them) so first-person's look vector uses the same
+          // negated form here.
+          //
+          // Pitch: orbitPitchRef is shared with the third-person camera,
+          // where it means "how high/overhead", defaulting to ~0.447 rad
+          // and clamped to [0.08, 1.35] — never zero, never negative. For
+          // an eye-level look direction that has to mean something
+          // different: 0 = dead ahead, positive = look down, negative =
+          // look up. `fpPitch` re-centers the shared value around its own
+          // default so first-person starts perfectly level, and dragging
+          // down/up tilts the view down/up from there.
+          const fpPitch = orbitPitchRef.current - 0.447;
+          const cosFP = Math.cos(fpPitch);
+          const lookDx = -sinYaw * cosFP;
+          const lookDy = -Math.sin(fpPitch);
+          const lookDz = -cosYaw * cosFP;
           targetPos.set(s.x, s.y + 1.6, s.z);
           targetLook.set(s.x + lookDx * 5, s.y + 1.6 + lookDy * 5, s.z + lookDz * 5);
           lerpSpeed = 0.45; // snappy — first-person look shouldn't lag behind the finger
@@ -1260,6 +1427,47 @@ function NativeRenderer({
         camLook.lerp(targetLook, lerpSpeed);
         camera.position.copy(camPos);
         camera.lookAt(camLook);
+
+        // Aim zoom — smoothly narrows the FOV while the aim button is
+        // held, in any camera mode, for the "professional" sniper-style
+        // zoom the aim/target-lock system in game.tsx drives.
+        const aiming = isAimingRef?.current ?? false;
+        const targetFov = aiming ? AIM_FOV : DEFAULT_FOV;
+        if (Math.abs(camera.fov - targetFov) > 0.05) {
+          camera.fov += (targetFov - camera.fov) * 0.18;
+          camera.updateProjectionMatrix();
+        }
+
+        // First-person weapon view-model — a hand+gun rig parented to the
+        // camera so it always sits in the same spot on screen, exactly
+        // like a real shooter's viewmodel, instead of the player's body
+        // (and weapon) simply being invisible in first-person.
+        vmGroup.visible = mode === 'first';
+        if (mode === 'first') {
+          updateViewModelWeapon(currentWeaponRef.current);
+          const idleT = now / 900;
+          const walkT = now / 130;
+          const swayX = moving ? Math.sin(walkT) * 0.014 : Math.sin(idleT) * 0.004;
+          const swayY = moving ? Math.abs(Math.cos(walkT)) * 0.012 : Math.sin(idleT * 1.3) * 0.003;
+          const aimLerp = aiming ? 0.5 : 0;
+          vmGroup.position.x = (0.28 + swayX) * (1 - aimLerp) + 0.02 * aimLerp;
+          vmGroup.position.y = (-0.28 + swayY) * (1 - aimLerp) + -0.2 * aimLerp;
+          vmGroup.position.z = -0.55 + aimLerp * 0.12;
+
+          // Recoil kick — synced to the exact same attack timestamp that
+          // drives the world-space tracer/pose above, so the on-screen
+          // gun visibly kicks the instant it fires.
+          let recoil = 0;
+          if (lastLocalAttackAt > 0) {
+            const el = now - lastLocalAttackAt;
+            const KICK_MS = 150;
+            if (el < KICK_MS) recoil = 1 - el / KICK_MS;
+          }
+          vmWeaponAnchor.position.z = recoil * 0.14;
+          vmGroup.rotation.x = -recoil * 0.16;
+
+          updateViewModelPop();
+        }
 
         renderer.render(scene, camera);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
