@@ -30,6 +30,7 @@ import {
   FINISH_DISTANCE,
   WEAPON_DEFS,
   WeaponType,
+  MELEE_RANGE,
 } from '@/services/game3DPhysics';
 import { SKINS, getSkin } from '@/constants/skins';
 import { usePvP } from '@/hooks/usePvP';
@@ -58,6 +59,21 @@ export default function GameScreen() {
   const localAttackRef = useRef<{ at: number; weapon: WeaponType | null }>({ at: 0, weapon: null });
   const localDamageAtRef = useRef(0);
   useEffect(() => { localDamageAtRef.current = pvp.lastDamageAt; }, [pvp.lastDamageAt]);
+
+  // ── Aim / target-lock system ─────────────────────────────────────
+  // isAimingRef: true while the "aim" button is held — drives the camera
+  // FOV zoom in GameRenderer3D. aimTargetIdRef: id of whichever remote
+  // player is currently locked (closest to the camera's actual look
+  // direction, within weapon range) — drives the floating lock-on
+  // reticle in the 3D scene and lets doAttack land a guaranteed hit
+  // instead of the normal "swing and hope they're in the arc" attack.
+  // aimCandidatesRef holds every valid target in range/view this tick, in
+  // order, so the "next target" button can manually cycle the lock.
+  const isAimingRef = useRef(false);
+  const aimTargetIdRef = useRef<string | null>(null);
+  const aimCandidatesRef = useRef<string[]>([]);
+  const aimCandidateIdxRef = useRef(0);
+  const [isAiming, setIsAiming] = useState(false);
 
   // Screen-space feedback — a quick red pulse when hit, a white pulse on
   // respawn. Driven by Animated directly (not React state) so it's a real
@@ -208,6 +224,47 @@ export default function GameScreen() {
         syncPosition(x, y, z, vx, vy, vz);
       }
 
+      // ── Aim targeting ────────────────────────────────────────
+      // While the aim button is held, find every remote player within
+      // the current weapon's range and a generous ~70° cone of the
+      // camera's actual look direction (not the walking direction, so
+      // you aim by turning the camera, exactly like a real shooter),
+      // sorted by how centered they are. The closest-to-center one is
+      // locked automatically; the "next target" button just walks this
+      // same sorted list.
+      if (isAimingRef.current && pvp.inArena) {
+        const p = physRef.current;
+        const def = pvp.currentWeapon ? WEAPON_DEFS[pvp.currentWeapon] : null;
+        const range = def ? def.range : MELEE_RANGE;
+        const yaw = orbitYawRef.current;
+        // Same "-Z at yaw=0" forward convention used by the camera and
+        // the joystick's world-space rotation above.
+        const viewAngle = Math.atan2(-Math.sin(yaw), -Math.cos(yaw));
+        const candidates = remotePlayersRef.current
+          .map((rp) => {
+            const dx = rp.x - p.x;
+            const dz = rp.z - p.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            const toTarget = Math.atan2(dx, dz);
+            let diff = Math.abs(toTarget - viewAngle);
+            if (diff > Math.PI) diff = Math.PI * 2 - diff;
+            return { id: rp.id, dist, diff };
+          })
+          .filter((c) => c.dist <= range && c.diff <= Math.PI / 2.5)
+          .sort((a, b) => a.diff - b.diff)
+          .map((c) => c.id);
+        aimCandidatesRef.current = candidates;
+        if (candidates.length === 0) {
+          aimTargetIdRef.current = null;
+        } else {
+          const idx = Math.min(aimCandidateIdxRef.current, candidates.length - 1);
+          aimTargetIdRef.current = candidates[idx];
+        }
+      } else if (aimTargetIdRef.current !== null) {
+        aimTargetIdRef.current = null;
+        aimCandidatesRef.current = [];
+      }
+
       // Trigger re-render for HUD (not GLView)
       if (frameRef.current % 10 === 0) {
         forceUpdate((n) => n + 1);
@@ -225,13 +282,37 @@ export default function GameScreen() {
 
   const doAttack = () => {
     const s = physRef.current;
-    const performed = pvp.attack(s.x, s.z, s.facingAngle, remotePlayersRef.current);
+    const targetId = aimTargetIdRef.current;
+    const performed = targetId
+      ? pvp.attackTarget(targetId, s.x, s.z, remotePlayersRef.current)
+      : pvp.attack(s.x, s.z, s.facingAngle, remotePlayersRef.current);
     if (performed) {
       localAttackRef.current = { at: Date.now(), weapon: pvp.currentWeapon };
       notifyAttack();
     }
   };
   const doPickup = () => { pvp.pickupNearestWeapon(); };
+
+  // Aim button: press-and-hold to zoom in and start tracking targets in
+  // front of the camera (see the physics-loop block above). Releasing
+  // drops the zoom and the lock.
+  const doAimStart = () => {
+    aimCandidateIdxRef.current = 0;
+    isAimingRef.current = true;
+    setIsAiming(true);
+  };
+  const doAimEnd = () => {
+    isAimingRef.current = false;
+    aimTargetIdRef.current = null;
+    setIsAiming(false);
+  };
+  // Manually step through every valid target in view while aiming — the
+  // explicit "pick which player to shoot" control.
+  const doCycleTarget = () => {
+    const list = aimCandidatesRef.current;
+    if (list.length < 2) return;
+    aimCandidateIdxRef.current = (aimCandidateIdxRef.current + 1) % list.length;
+  };
 
   const cycleCamera = () => {
     const nextIdx = (CAMERA_ORDER.indexOf(cameraModeRef.current) + 1) % CAMERA_ORDER.length;
@@ -266,6 +347,8 @@ export default function GameScreen() {
         currentWeaponRef={currentWeaponRef}
         localAttackRef={localAttackRef}
         localDamageAtRef={localDamageAtRef}
+        isAimingRef={isAimingRef}
+        aimTargetIdRef={aimTargetIdRef}
       />
 
       {/* ── Damage / respawn screen flashes ─────────────
@@ -342,14 +425,58 @@ export default function GameScreen() {
         </View>
       )}
 
+      {/* ── Aim crosshair — center-screen reticle, only while holding a
+          weapon in the arena. Grows/brightens and shows a lock indicator
+          while actively aiming, exactly like a real shooter's ADS. ── */}
+      {pvp.inArena && pvp.currentWeapon && (
+        <View style={styles.crosshairWrap} pointerEvents="none">
+          <View
+            style={[
+              styles.crosshairRing,
+              isAiming && styles.crosshairRingAiming,
+              isAiming && aimTargetIdRef.current && styles.crosshairRingLocked,
+            ]}
+          />
+          <View style={[styles.crosshairDot, isAiming && styles.crosshairDotAiming]} />
+        </View>
+      )}
+
+      {/* ── Locked-target name tag — the 2D half of the targeting UI; the
+          3D lock-on ring above the target's own head lives in
+          GameRenderer3D. ── */}
+      {isAiming && aimTargetIdRef.current && (
+        <View style={styles.targetTagWrap} pointerEvents="none">
+          <Text style={styles.targetTagText}>
+            🎯 {remotePlayersRef.current.find((r) => r.id === aimTargetIdRef.current)?.name ?? 'هدف'}
+          </Text>
+        </View>
+      )}
+
       {/* ── PvP action buttons — attack always available in the arena,
-          pickup only pops up standing near an available weapon crate ── */}
+          pickup only pops up standing near an available weapon crate.
+          Aim (hold) zooms in and locks onto whoever's in the crosshair;
+          "التالي" cycles the lock between multiple targets in view. ── */}
       {pvp.inArena && (
         <View style={styles.pvpBtns} pointerEvents="box-none">
           {pvp.nearestWeaponId && (
             <Pressable style={styles.pickupBtn} onPress={doPickup}>
               <Ionicons name="hand-left" size={18} color="#06060f" />
               <Text style={styles.pickupBtnTxt}>التقط</Text>
+            </Pressable>
+          )}
+          {pvp.currentWeapon && isAiming && aimCandidatesRef.current.length > 1 && (
+            <Pressable style={styles.nextTargetBtn} onPress={doCycleTarget}>
+              <Ionicons name="sync" size={14} color="#06060f" />
+              <Text style={styles.pickupBtnTxt}>التالي</Text>
+            </Pressable>
+          )}
+          {pvp.currentWeapon && (
+            <Pressable
+              style={[styles.aimBtn, isAiming && styles.aimBtnActive]}
+              onPressIn={doAimStart}
+              onPressOut={doAimEnd}
+            >
+              <Ionicons name="locate" size={24} color={isAiming ? '#06060f' : '#00ffcc'} />
             </Pressable>
           )}
           <Pressable style={styles.attackBtn} onPress={doAttack}>
@@ -781,5 +908,87 @@ const styles = StyleSheet.create({
     color: '#06060f',
     fontWeight: '800',
     fontSize: 12,
+  },
+  // ── Aim crosshair / target lock
+  crosshairWrap: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginLeft: -20,
+    marginTop: -20,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  crosshairRing: {
+    position: 'absolute',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,255,204,0.55)',
+  },
+  crosshairRingAiming: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderColor: 'rgba(0,255,204,0.85)',
+    borderWidth: 2,
+  },
+  crosshairRingLocked: {
+    borderColor: '#ff3333',
+  },
+  crosshairDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(0,255,204,0.9)',
+  },
+  crosshairDotAiming: {
+    backgroundColor: '#ff3333',
+  },
+  targetTagWrap: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    marginTop: 26,
+    transform: [{ translateX: -60 }],
+    width: 120,
+    alignItems: 'center',
+    backgroundColor: 'rgba(6,6,18,0.6)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255,51,51,0.5)',
+  },
+  targetTagText: {
+    color: '#ff8888',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  aimBtn: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: 'rgba(0,255,204,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(0,255,204,0.5)',
+  },
+  aimBtnActive: {
+    backgroundColor: '#00ffcc',
+    borderColor: '#00ffcc',
+  },
+  nextTargetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#00ffcc',
   },
 });
