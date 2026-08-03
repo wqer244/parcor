@@ -32,6 +32,7 @@ import {
   WeaponType,
   MELEE_RANGE,
 } from '@/services/game3DPhysics';
+import { initSfx, playWeaponFire, playHitImpact, playTargetLock, playPickup } from '@/services/sfx';
 import { SKINS, getSkin } from '@/constants/skins';
 import { usePvP } from '@/hooks/usePvP';
 
@@ -58,7 +59,13 @@ export default function GameScreen() {
   // the hook's lastDamageAt) — see GameRenderer3D's animate loop.
   const localAttackRef = useRef<{ at: number; weapon: WeaponType | null }>({ at: 0, weapon: null });
   const localDamageAtRef = useRef(0);
-  useEffect(() => { localDamageAtRef.current = pvp.lastDamageAt; }, [pvp.lastDamageAt]);
+  useEffect(() => { initSfx(); }, []);
+  useEffect(() => {
+    if (pvp.lastDamageAt > 0 && pvp.lastDamageAt !== localDamageAtRef.current) {
+      playHitImpact();
+    }
+    localDamageAtRef.current = pvp.lastDamageAt;
+  }, [pvp.lastDamageAt]);
 
   // ── Aim / target-lock system ─────────────────────────────────────
   // isAimingRef: true while the "aim" button is held — drives the camera
@@ -74,6 +81,15 @@ export default function GameScreen() {
   const aimCandidatesRef = useRef<string[]>([]);
   const aimCandidateIdxRef = useRef(0);
   const [isAiming, setIsAiming] = useState(false);
+  // Remote players' weapon fire comes through this ref from
+  // GameRenderer3D (see onFireRef prop) — local fire is already handled
+  // directly in doAttack below, so this only plays for other players.
+  const onFireRef = useRef<((weapon: WeaponType, isLocal: boolean, distance: number) => void) | null>(null);
+  useEffect(() => {
+    onFireRef.current = (weapon, isLocal, distance) => {
+      if (!isLocal) playWeaponFire(weapon, distance);
+    };
+  }, []);
 
   // Screen-space feedback — a quick red pulse when hit, a white pulse on
   // respawn. Driven by Animated directly (not React state) so it's a real
@@ -258,7 +274,9 @@ export default function GameScreen() {
           aimTargetIdRef.current = null;
         } else {
           const idx = Math.min(aimCandidateIdxRef.current, candidates.length - 1);
-          aimTargetIdRef.current = candidates[idx];
+          const next = candidates[idx];
+          if (next !== aimTargetIdRef.current) playTargetLock();
+          aimTargetIdRef.current = next;
         }
       } else if (aimTargetIdRef.current !== null) {
         aimTargetIdRef.current = null;
@@ -289,9 +307,10 @@ export default function GameScreen() {
     if (performed) {
       localAttackRef.current = { at: Date.now(), weapon: pvp.currentWeapon };
       notifyAttack();
+      playWeaponFire(pvp.currentWeapon ?? 'sword');
     }
   };
-  const doPickup = () => { pvp.pickupNearestWeapon(); };
+  const doPickup = () => { pvp.pickupNearestWeapon().then((ok) => { if (ok) playPickup(); }); };
 
   // Aim button: press-and-hold to zoom in and start tracking targets in
   // front of the camera (see the physics-loop block above). Releasing
@@ -349,6 +368,7 @@ export default function GameScreen() {
         localDamageAtRef={localDamageAtRef}
         isAimingRef={isAimingRef}
         aimTargetIdRef={aimTargetIdRef}
+        onFireRef={onFireRef}
       />
 
       {/* ── Damage / respawn screen flashes ─────────────
