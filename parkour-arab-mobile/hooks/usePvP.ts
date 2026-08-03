@@ -109,11 +109,12 @@ export function usePvP(playerId: string) {
   }, []);
 
   const pickupNearestWeapon = useCallback(async () => {
-    if (!nearestWeaponId) return;
+    if (!nearestWeaponId) return false;
     const spawn = PVP_WEAPON_SPAWNS.find((w) => w.id === nearestWeaponId);
-    if (!spawn) return;
+    if (!spawn) return false;
     const claimed = await tryPickupWeapon(nearestWeaponId);
     if (claimed) setCurrentWeapon(spawn.type);
+    return claimed;
   }, [nearestWeaponId]);
 
   // Attacks whoever's in range/arc in front of the local player. Melee if
