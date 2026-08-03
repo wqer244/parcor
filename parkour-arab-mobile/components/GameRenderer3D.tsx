@@ -8,7 +8,7 @@ import { GLView } from 'expo-gl';
 import * as THREE from 'three';
 import {
   PLATFORMS, PhysState3D, WeaponType, WEAPON_DEFS, PVP_WEAPON_SPAWNS, WEAPON_RESPAWN_MS,
-  PVP_PILLARS, PVP_WALL_SEGMENTS, TIER_COLORS,
+  PVP_PILLARS, PVP_WALL_SEGMENTS, PVP_BANNERS, TIER_COLORS,
 } from '@/services/game3DPhysics';
 import { Skin, getSkin, DEFAULT_SKIN_ID, CHARACTER_MODEL } from '@/constants/skins';
 import { Asset } from 'expo-asset';
@@ -66,6 +66,13 @@ interface Props {
   // id of the remote player currently locked as the aim target (or null)
   // — drives the floating lock-on reticle drawn above their head.
   aimTargetIdRef?: React.MutableRefObject<string | null>;
+  // Fired every time ANY player (local or remote) triggers a weapon
+  // attack, so game.tsx can play the matching sound effect — with a
+  // distance for remote shots so game.tsx can attenuate the volume for
+  // far-away gunfire instead of every shot on the map blasting at full
+  // volume. Kept as a ref (not a prop callback that changes) so calling
+  // it every frame-ish never triggers a React re-render.
+  onFireRef?: React.MutableRefObject<((weapon: WeaponType, isLocal: boolean, distance: number) => void) | null>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -475,20 +482,95 @@ function buildArenaDecor(scene: THREE.Scene) {
   scene.add(arch);
 
   // Central hub — a vertical light column marking the legendary weapon
-  // objective, visible from every corner of the arena.
+  // objective, visible from every corner of the (much bigger) arena.
   const beamMat = new THREE.MeshBasicMaterial({
     color: 0xffb020, transparent: true, opacity: 0.18, side: THREE.DoubleSide,
   });
   const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 40, 16, 1, true), beamMat);
-  beam.position.set(0, 22, 43);
+  beam.position.set(0, 22, 57);
   scene.add(beam);
 
+  // Concentric floor rings around the hub — a cheap way to make the
+  // ground read as "designed arena floor with a spotlight zone" instead
+  // of a flat colored rectangle.
+  const floorRingMat = new THREE.MeshBasicMaterial({
+    color: 0xffb020, transparent: true, opacity: 0.22, side: THREE.DoubleSide,
+  });
+  for (const r of [5.2, 7.2, 9.4]) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(r, r + 0.08, 40), floorRingMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, 0.02, 57);
+    scene.add(ring);
+  }
+
+  // Energy-shield dome — a huge, faintly tinted hemisphere over the whole
+  // arena. This single mesh does an outsized amount of work for how
+  // cheap it is: instead of the arena just trailing off into the
+  // starfield, it now reads as an enclosed coliseum with a sci-fi shield
+  // roof, viewed from the inside (BackSide) so it doesn't occlude
+  // anything and never needs to be lit.
+  const domeMat = new THREE.MeshBasicMaterial({
+    color: 0x6a2a55, transparent: true, opacity: 0.07, side: THREE.BackSide, depthWrite: false,
+  });
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(52, 24, 14, 0, Math.PI * 2, 0, Math.PI / 2),
+    domeMat,
+  );
+  dome.position.set(0, 0, 57);
+  scene.add(dome);
+  // A bright seam ring where the dome meets the walls reads as its "base"
+  const domeSeam = new THREE.Mesh(new THREE.TorusGeometry(52, 0.12, 6, 48), archMat);
+  domeSeam.rotation.x = Math.PI / 2;
+  domeSeam.position.set(0, 0.05, 57);
+  scene.add(domeSeam);
+
+  // Thin glowing light pillars strung along both perimeter walls —
+  // breaks up the flat wall slabs from the outside and from a distance
+  // reads like stadium floodlight masts. Batched into one InstancedMesh.
+  const lightPillarMat = getStandardMat({ color: 0xff3333, emissive: 0xff3333, emissiveIntensity: 2.0 });
+  const pillarSpots: { x: number; z: number }[] = [];
+  for (let z = 30; z <= 84; z += 9) {
+    pillarSpots.push({ x: -20.9, z });
+    pillarSpots.push({ x: 20.9, z });
+  }
+  const lightPillarMesh = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.06, 0.06, 4.4, 6), lightPillarMat, pillarSpots.length,
+  );
+  const lpDummy = new THREE.Object3D();
+  pillarSpots.forEach((s, i) => {
+    lpDummy.position.set(s.x, 2.2, s.z);
+    lpDummy.updateMatrix();
+    lightPillarMesh.setMatrixAt(i, lpDummy.matrix);
+  });
+  lightPillarMesh.instanceMatrix.needsUpdate = true;
+  scene.add(lightPillarMesh);
+
+  // Hanging team-color banners at the gate and every corner tower — flat
+  // planes, one draw call each, but a big visual read from a distance
+  // (this is what stops corner decks from all looking identical).
+  for (const b of PVP_BANNERS) {
+    const bannerMat = new THREE.MeshBasicMaterial({
+      color: cssHex(b.color), transparent: true, opacity: 0.55, side: THREE.DoubleSide,
+    });
+    const banner = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 3.2), bannerMat);
+    banner.position.set(b.x, b.height, b.z);
+    banner.rotation.y = b.x < 0 ? 0.15 : -0.15; // slight angle so it doesn't read as a flat 2D cutout head-on
+    scene.add(banner);
+    const trimStripe = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.1),
+      new THREE.MeshBasicMaterial({ color: cssHex(b.color), transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+    );
+    trimStripe.position.set(b.x, b.height - 1.65, b.z + (b.x < 0 ? 0.02 : -0.02));
+    trimStripe.rotation.y = banner.rotation.y;
+    scene.add(trimStripe);
+  }
+
   // Hi-tech floor grid — every line (vertical + horizontal) batched into
-  // one InstancedMesh instead of ~18 separate plane meshes.
+  // one InstancedMesh instead of ~20+ separate plane meshes.
   const gridMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.16 });
   const gridLines: { x: number; z: number; sx: number; sz: number }[] = [];
-  for (let gx = -12; gx <= 12; gx += 3) gridLines.push({ x: gx, z: 43, sx: 0.03, sz: 34 });
-  for (let gz = 27; gz <= 59; gz += 4) gridLines.push({ x: 0, z: gz, sx: 24, sz: 0.03 });
+  for (let gx = -20; gx <= 20; gx += 4) gridLines.push({ x: gx, z: 57, sx: 0.03, sz: 62 });
+  for (let gz = 27; gz <= 87; gz += 5) gridLines.push({ x: 0, z: gz, sx: 40, sz: 0.03 });
   const gridMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), gridMat, gridLines.length);
   const gridDummy = new THREE.Object3D();
   gridLines.forEach((g, i) => {
@@ -745,7 +827,7 @@ function WebPlaceholder() {
 function NativeRenderer({
   physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef,
   weaponTakenAtRef, currentWeaponRef, localAttackRef, localDamageAtRef,
-  isAimingRef, aimTargetIdRef,
+  isAimingRef, aimTargetIdRef, onFireRef,
 }: Props) {
   const rafRef = useRef<number>(0);
 
@@ -925,7 +1007,11 @@ function NativeRenderer({
       // remote) — fires the one-off ranged effect if applicable. The
       // per-frame pose (swing/recoil) is applied separately every frame
       // for the animation's duration, see applyAttackPose below.
-      function triggerAttackEffect(rig: AnyRig, heldMesh: THREE.Object3D | null, weaponType: WeaponType | null | undefined) {
+      function triggerAttackEffect(rig: AnyRig, heldMesh: THREE.Object3D | null, weaponType: WeaponType | null | undefined, isLocal: boolean) {
+        if (weaponType && onFireRef?.current) {
+          const dist = isLocal ? 0 : rig.group.position.distanceTo(camera.position);
+          onFireRef.current(weaponType, isLocal, dist);
+        }
         if (rig.kind !== 'procedural') return; // model rig has no puppeteerable gun hand — known limitation
         const def = weaponType ? WEAPON_DEFS[weaponType] : null;
         if (def?.ranged) fireRangedEffect(rig, heldMesh, cssHex(def.color), def.range);
@@ -1239,7 +1325,7 @@ function NativeRenderer({
         const localAtk = localAttackRef.current;
         if (localAtk.at !== lastLocalAttackAt) {
           lastLocalAttackAt = localAtk.at;
-          triggerAttackEffect(playerRig, playerHeldWeapon.mesh, localAtk.weapon);
+          triggerAttackEffect(playerRig, playerHeldWeapon.mesh, localAtk.weapon, true);
         }
         if (playerRig.kind === 'procedural' && lastLocalAttackAt > 0 && now - lastLocalAttackAt < ATTACK_ANIM_MS) {
           applyAttackPose(playerRig, localAtk.weapon, now - lastLocalAttackAt);
@@ -1313,7 +1399,7 @@ function NativeRenderer({
           const rpAttackedAt = rp.attackedAt ?? 0;
           if (rpAttackedAt !== entry.lastAttackAt) {
             entry.lastAttackAt = rpAttackedAt;
-            triggerAttackEffect(entry.rig, entry.heldWeapon.mesh, rp.weapon);
+            triggerAttackEffect(entry.rig, entry.heldWeapon.mesh, rp.weapon, false);
           }
           // Infer movement + facing from frame-to-frame position deltas,
           // since remote players only send us a position, not full physics.
