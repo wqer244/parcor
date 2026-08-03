@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { I18nManager, Platform } from 'react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -18,6 +18,35 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { PlayerProvider } from '@/context/PlayerContext';
 
 SplashScreen.preventAutoHideAsync();
+
+// ── Force LTR layout, regardless of the device's Arabic locale ──────────
+// React Native auto-enables I18nManager.isRTL when the OS locale is a
+// right-to-left language (Arabic included) — completely separate from
+// what language the app's own text is in. Once RTL is on, it silently
+// mirrors every `position: 'absolute'` view's `left`/`right` values and
+// reverses every `flexDirection: 'row'` container. That's exactly what
+// was stacking the game's top-right icon cluster (camera/settings/mic),
+// the health bar, and the pickup/aim/attack button column all on top of
+// each other on the SAME physical side of the screen — each of those was
+// coded with a plain left/right offset, and RTL flipped all of them at
+// once, independently of each other, so several unrelated HUD pieces
+// collapsed into the same physical spot.
+//
+// A game's control layout (buttons, joystick, HUD) should stay fixed no
+// matter what language is selected — mirroring it by locale wasn't a
+// deliberate design choice here, just an unintended side effect of the
+// device being set to Arabic. This turns that off app-wide; Arabic TEXT
+// itself is untouched (that's plain string content, not layout
+// direction) and still renders and reads correctly everywhere.
+//
+// NOTE: like any I18nManager change, this only fully applies after the
+// app is completely closed and reopened (a hot reload during development
+// is not enough) — that's a React Native/native-module limitation, not
+// something a JS-only fix can work around.
+if (I18nManager.isRTL) {
+  I18nManager.allowRTL(false);
+  I18nManager.forceRTL(false);
+}
 
 // Lock the whole app to landscape at runtime. `app.json`'s "orientation":
 // "landscape" only takes effect in a real prebuilt/EAS build — it is NOT
