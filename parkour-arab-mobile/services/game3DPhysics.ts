@@ -75,13 +75,13 @@ export interface WeaponSpawn {
 // decks (reward climbing for high ground), and one legendary railgun on
 // the central hub platform (the map's main fight-for-it objective).
 export const PVP_WEAPON_SPAWNS: WeaponSpawn[] = [
-  { id: 'w1', type: 'sword',   x: 0,  y: 0.5, z: 38 },
-  { id: 'w2', type: 'blaster', x: 0,  y: 0.5, z: 48 },
-  { id: 'w3', type: 'bow',     x: -9, y: 2.9, z: 30 },
-  { id: 'w4', type: 'hammer',  x: 9,  y: 2.9, z: 30 },
-  { id: 'w5', type: 'staff',   x: 9,  y: 2.9, z: 56 },
-  { id: 'w6', type: 'sword',   x: -9, y: 2.9, z: 56 },
-  { id: 'w7', type: 'railgun', x: 0,  y: 2.3, z: 43 },
+  { id: 'w1', type: 'sword',   x: 0,   y: 0.5, z: 40 },
+  { id: 'w2', type: 'blaster', x: 0,   y: 0.5, z: 74 },
+  { id: 'w3', type: 'bow',     x: -16, y: 3.1, z: 30 },
+  { id: 'w4', type: 'hammer',  x: 16,  y: 3.1, z: 30 },
+  { id: 'w5', type: 'staff',   x: 16,  y: 3.1, z: 84 },
+  { id: 'w6', type: 'sword',   x: -16, y: 3.1, z: 84 },
+  { id: 'w7', type: 'railgun', x: 0,   y: 2.5, z: 57 },
 ];
 
 export const WEAPON_RESPAWN_MS = 15000;
@@ -95,7 +95,14 @@ export const ATTACK_COOLDOWN_MS = 500;
 // Arena floor bounds (a subregion of the 'pvp-ground' platform below) —
 // used to detect entering/leaving the PvP zone (health bar, weapon pickups,
 // and combat are only active inside these bounds).
-export const PVP_ARENA_BOUNDS = { minX: -12, maxX: 12, minZ: 26, maxZ: 60 };
+//
+// NOTE: this used to be a cramped 24x34 box — noticeably too small once
+// weapons with 15-22 unit range (blaster/bow/staff/railgun) are in play,
+// since a fight in one corner could hitscan clear across to the opposite
+// wall with room to spare. It's now 40x62 (roughly 2x the floor area),
+// with the whole layout below (hub, corner decks, cover) redesigned to
+// actually fill that space instead of leaving it empty.
+export const PVP_ARENA_BOUNDS = { minX: -20, maxX: 20, minZ: 26, maxZ: 88 };
 export function isInPvPArena(x: number, z: number): boolean {
   return (
     x >= PVP_ARENA_BOUNDS.minX && x <= PVP_ARENA_BOUNDS.maxX &&
@@ -103,7 +110,7 @@ export function isInPvPArena(x: number, z: number): boolean {
   );
 }
 // Where a player respawns after their health hits 0 in the arena.
-export const PVP_SPAWN = { x: 0, y: 0.5, z: 33 };
+export const PVP_SPAWN = { x: 0, y: 0.5, z: 34 };
 
 export interface Platform3D {
   id: string;
@@ -198,82 +205,114 @@ export const PLATFORMS: Platform3D[] = [
   // walk backward from the start platform to reach it. Built as a
   // continuous ground floor (so nothing here is a death-fall — you just
   // land back on the arena floor) with four elevated corner sniper decks
-  // reached by a single stair step each, a central raised hub platform
-  // holding the legendary weapon, and low cover blocks scattered across
-  // the mid-field for tactical melee engagements. Combat/weapons/health
-  // are only active inside PVP_ARENA_BOUNDS below (the z:26–60 portion).
+  // reached by a single stair step each, a large central raised hub
+  // platform holding the legendary weapon, and scattered cover blocks of
+  // two different heights across the (now much bigger) mid-field for
+  // tactical engagements at both melee and ranged distance. Combat/
+  // weapons/health are only active inside PVP_ARENA_BOUNDS below (the
+  // z:26–88 portion).
   { id:'pvp-walkway', x:0, y:0, z:16, width:8, height:0.5, depth:20,
     color:'#0d1830', glowColor:'#3366cc', type:'ground' },
-  { id:'pvp-ground', x:0, y:0, z:43, width:26, height:0.5, depth:34,
+  { id:'pvp-ground', x:0, y:0, z:57, width:40, height:0.5, depth:62,
     color:'#241012', glowColor:'#ff3333', type:'ground', arena:true },
 
   // Central hub — the contested "king of the hill" objective, holds the
   // legendary railgun (w7 above). Single step up from the open floor.
-  { id:'pvp-hub-step', x:0, y:0.9, z:37.5, width:3.2, height:0.9, depth:3.2,
+  { id:'pvp-hub-step', x:0, y:1.0, z:50, width:5, height:1.0, depth:5,
     color:'#3a1414', glowColor:'#ff7a3a', type:'platform', arena:true },
-  { id:'pvp-hub', x:0, y:1.8, z:43, width:6.5, height:0.5, depth:6.5,
+  { id:'pvp-hub', x:0, y:2.0, z:57, width:9, height:0.6, depth:9,
     color:'#3a1414', glowColor:'#ffb020', type:'platform', arena:true },
 
   // Corner sniper decks — one stair step + one deck each, mirrored
-  // across all four corners of the arena for symmetric competitive play.
-  { id:'pvp-nw-step', x:-9, y:1.2, z:33.5, width:2.8, height:1.2, depth:2.8,
+  // across all four corners of the (much wider) arena for symmetric
+  // competitive play.
+  { id:'pvp-nw-step', x:-16, y:1.2, z:35, width:3.2, height:1.2, depth:3.2,
     color:'#1a1030', glowColor:'#3aa0ff', type:'platform', arena:true },
-  { id:'pvp-nw-deck', x:-9, y:2.4, z:29.5, width:4.2, height:0.5, depth:4.2,
+  { id:'pvp-nw-deck', x:-16, y:2.6, z:30, width:5, height:0.5, depth:5,
     color:'#1a1030', glowColor:'#3aa0ff', type:'platform', arena:true },
 
-  { id:'pvp-ne-step', x:9, y:1.2, z:33.5, width:2.8, height:1.2, depth:2.8,
+  { id:'pvp-ne-step', x:16, y:1.2, z:35, width:3.2, height:1.2, depth:3.2,
     color:'#1a1030', glowColor:'#39ff6a', type:'platform', arena:true },
-  { id:'pvp-ne-deck', x:9, y:2.4, z:29.5, width:4.2, height:0.5, depth:4.2,
+  { id:'pvp-ne-deck', x:16, y:2.6, z:30, width:5, height:0.5, depth:5,
     color:'#1a1030', glowColor:'#39ff6a', type:'platform', arena:true },
 
-  { id:'pvp-sw-step', x:-9, y:1.2, z:52.5, width:2.8, height:1.2, depth:2.8,
+  { id:'pvp-sw-step', x:-16, y:1.2, z:79, width:3.2, height:1.2, depth:3.2,
     color:'#1a1030', glowColor:'#c23bff', type:'platform', arena:true },
-  { id:'pvp-sw-deck', x:-9, y:2.4, z:56.5, width:4.2, height:0.5, depth:4.2,
+  { id:'pvp-sw-deck', x:-16, y:2.6, z:84, width:5, height:0.5, depth:5,
     color:'#1a1030', glowColor:'#c23bff', type:'platform', arena:true },
 
-  { id:'pvp-se-step', x:9, y:1.2, z:52.5, width:2.8, height:1.2, depth:2.8,
+  { id:'pvp-se-step', x:16, y:1.2, z:79, width:3.2, height:1.2, depth:3.2,
     color:'#1a1030', glowColor:'#ffcc33', type:'platform', arena:true },
-  { id:'pvp-se-deck', x:9, y:2.4, z:56.5, width:4.2, height:0.5, depth:4.2,
+  { id:'pvp-se-deck', x:16, y:2.6, z:84, width:5, height:0.5, depth:5,
     color:'#1a1030', glowColor:'#ffcc33', type:'platform', arena:true },
 
-  // Mid-field cover blocks — tall enough to break line-of-sight for
-  // ranged weapons and to duck behind mid-fight, jumpable for high ground.
-  { id:'pvp-cover-1', x:-5, y:1.5, z:36, width:2, height:1.5, depth:2,
+  // Mid-field cover blocks — two heights (short crouch-cover and tall
+  // line-of-sight blockers) spread across three rows so the much bigger
+  // floor doesn't leave one long empty sightline from gate to back wall.
+  { id:'pvp-cover-1', x:-8,  y:1.6, z:42, width:2.2, height:1.6, depth:2.2,
     color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
-  { id:'pvp-cover-2', x:5,  y:1.5, z:36, width:2, height:1.5, depth:2,
+  { id:'pvp-cover-2', x:8,   y:1.6, z:42, width:2.2, height:1.6, depth:2.2,
     color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
-  { id:'pvp-cover-3', x:-5, y:1.5, z:50, width:2, height:1.5, depth:2,
+  { id:'pvp-cover-3', x:-11, y:1.2, z:57, width:2.6, height:1.2, depth:2.6,
     color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
-  { id:'pvp-cover-4', x:5,  y:1.5, z:50, width:2, height:1.5, depth:2,
+  { id:'pvp-cover-4', x:11,  y:1.2, z:57, width:2.6, height:1.2, depth:2.6,
+    color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
+  { id:'pvp-cover-5', x:-8,  y:1.6, z:72, width:2.2, height:1.6, depth:2.2,
+    color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
+  { id:'pvp-cover-6', x:8,   y:1.6, z:72, width:2.2, height:1.6, depth:2.2,
     color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
 ];
 
 // ── PvP Arena — decorative structures (no collision) ────────
 // Pure set-dressing rendered once and never touched by physics: corner
-// towers, perimeter energy walls, and an entrance gate. This is what
-// turns the arena from "a floor with boxes on it" into a real-looking
-// coliseum silhouette when viewed from a distance.
+// towers, perimeter energy walls + light pillars, an entrance gate, and
+// hanging banners. This is what turns the arena from "a floor with boxes
+// on it" into a real-looking coliseum silhouette when viewed from a
+// distance — see buildArenaDecor() in GameRenderer3D.tsx for the actual
+// meshes built from this data.
 export interface ArenaPillar { x: number; z: number; height: number; radius: number }
 export const PVP_PILLARS: ArenaPillar[] = [
-  { x: -12.6, z: 26.5, height: 9,  radius: 0.55 },
-  { x: 12.6,  z: 26.5, height: 9,  radius: 0.55 },
-  { x: -12.6, z: 60.5, height: 9,  radius: 0.55 },
-  { x: 12.6,  z: 60.5, height: 9,  radius: 0.55 },
+  // Four corner towers, taller now to match the bigger arena footprint.
+  { x: -20.6, z: 26.5, height: 12, radius: 0.65 },
+  { x: 20.6,  z: 26.5, height: 12, radius: 0.65 },
+  { x: -20.6, z: 87.5, height: 12, radius: 0.65 },
+  { x: 20.6,  z: 87.5, height: 12, radius: 0.65 },
+  // Mid-wall towers on both long sides, breaking up what would otherwise
+  // be a bare 62-unit wall with nothing on it.
+  { x: -20.6, z: 57, height: 10, radius: 0.55 },
+  { x: 20.6,  z: 57, height: 10, radius: 0.55 },
   // Entrance gate pillars, framing the walkway → arena transition
-  { x: -4, z: 25.2, height: 6.5, radius: 0.4 },
-  { x: 4,  z: 25.2, height: 6.5, radius: 0.4 },
+  { x: -4, z: 25.2, height: 8, radius: 0.4 },
+  { x: 4,  z: 25.2, height: 8, radius: 0.4 },
 ];
 
 export interface ArenaWallSegment { x: number; z: number; width: number; depth: number; height: number }
 export const PVP_WALL_SEGMENTS: ArenaWallSegment[] = [
-  // Long perimeter walls, split into two segments per side for rhythm
-  { x: -12.8, z: 33, width: 0.6, depth: 13, height: 3.2 },
-  { x: -12.8, z: 53, width: 0.6, depth: 13, height: 3.2 },
-  { x: 12.8,  z: 33, width: 0.6, depth: 13, height: 3.2 },
-  { x: 12.8,  z: 53, width: 0.6, depth: 13, height: 3.2 },
+  // Long perimeter walls, split into three segments per side for rhythm
+  // across the wider arena (small gaps between segments read as "seams"
+  // in the structure rather than one flat monotonous slab).
+  { x: -20.8, z: 33, width: 0.6, depth: 15, height: 3.6 },
+  { x: -20.8, z: 57, width: 0.6, depth: 15, height: 3.6 },
+  { x: -20.8, z: 81, width: 0.6, depth: 15, height: 3.6 },
+  { x: 20.8,  z: 33, width: 0.6, depth: 15, height: 3.6 },
+  { x: 20.8,  z: 57, width: 0.6, depth: 15, height: 3.6 },
+  { x: 20.8,  z: 81, width: 0.6, depth: 15, height: 3.6 },
   // Back wall, split with a center gap for a skyline silhouette
-  { x: -6.5, z: 60.8, width: 9,  depth: 0.6, height: 3.6 },
-  { x: 6.5,  z: 60.8, width: 9,  depth: 0.6, height: 3.6 },
+  { x: -11, z: 88.8, width: 18, depth: 0.6, height: 4.2 },
+  { x: 11,  z: 88.8, width: 18, depth: 0.6, height: 4.2 },
+];
+
+// Hanging team-color banners near the gate and each corner tower — cheap
+// (one draw call, flat planes) but they do a lot to make the arena read
+// as a designed space instead of a floor with boxes scattered on it.
+export interface ArenaBanner { x: number; z: number; height: number; color: string }
+export const PVP_BANNERS: ArenaBanner[] = [
+  { x: -4, z: 25.0, height: 6.5, color: '#ffb020' },
+  { x: 4,  z: 25.0, height: 6.5, color: '#ffb020' },
+  { x: -20.4, z: 26.7, height: 9.5, color: '#3aa0ff' },
+  { x: 20.4,  z: 26.7, height: 9.5, color: '#39ff6a' },
+  { x: -20.4, z: 87.3, height: 9.5, color: '#c23bff' },
+  { x: 20.4,  z: 87.3, height: 9.5, color: '#ffcc33' },
 ];
 
 // Distance (|z|) of the finish line from the start — used by the HUD to
