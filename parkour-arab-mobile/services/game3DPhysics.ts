@@ -360,7 +360,17 @@ export function stepPhysics3D(
     vy = Math.max(vy - GRAVITY, -MAX_FALL_SPEED);
   }
 
-  const newX = Math.max(-13, Math.min(13, x + vx));
+  // World X bounds — a safety wall stopping the player from drifting
+  // infinitely sideways off the (narrow, ~5-unit-wide) parkour course.
+  //
+  // IMPORTANT: this must stay wide enough to cover the PvP arena too
+  // (PVP_ARENA_BOUNDS, currently X: -20..20) — the arena's corner decks
+  // sit at X=±16, so clamping tighter than that silently walls them off
+  // completely, with no visual indication anything is blocking you. This
+  // used to be ±13, a leftover from when the arena was only 24 units
+  // wide; it's now wide enough for both the parkour course and the full
+  // current arena width, with a small margin.
+  const newX = Math.max(-22, Math.min(22, x + vx));
   const newY = y + vy;
   const newZ = z + vz;
 
