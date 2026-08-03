@@ -5,6 +5,13 @@
 // Uses expo-audio's createAudioPlayer, which builds a ready-to-play
 // player synchronously (no async loading dance needed before first use).
 //
+// ────────────────────────────────────────────────────────
+// Sound effects — weapon fire, melee swings, hit impacts,
+// target-lock, and weapon pickups.
+// ────────────────────────────────────────────────────────
+// Uses expo-audio's createAudioPlayer, which builds a ready-to-play
+// player synchronously (no async loading dance needed before first use).
+//
 // Every sound gets a small ROUND-ROBIN POOL of players (not just one)
 // for the same reason the renderer keeps pools of tracers/flashes: a
 // railgun or blaster can fire faster than one clip's playback length,
@@ -17,7 +24,7 @@
 // plain side-effect module, safe to call from anywhere (game.tsx,
 // usePvP.ts, or the low-level per-frame renderer loop in
 // GameRenderer3D.tsx) without re-render cost.
-import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import type { WeaponType } from './game3DPhysics';
 
 type SfxKey = 'blaster' | 'railgun' | 'bow' | 'staff' | 'melee' | 'hit' | 'lock' | 'pickup';
@@ -45,6 +52,25 @@ let ready = false;
 export function initSfx() {
   if (ready) return;
   ready = true;
+
+  // ── Audio session config ─────────────────────────────────────────
+  // Explicitly claims the loudspeaker route and "mix with others" so
+  // these sound effects: (a) never inherit the earpiece/"phone call"
+  // routing that a VoIP engine like the Agora voice chat can otherwise
+  // put the whole device's audio session into, and (b) play ALONGSIDE
+  // the voice chat instead of interrupting/ducking it or getting
+  // interrupted by it — the two audio sources should be independent and
+  // both audible, not fighting over the same channel.
+  setAudioModeAsync({
+    playsInSilentMode: true,
+    shouldPlayInBackground: false,
+    interruptionMode: 'mixWithOthers',
+    interruptionModeAndroid: 'duckOthers',
+    shouldRouteThroughEarpiece: false,
+  }).catch((err) => {
+    console.warn('[sfx] failed to set audio mode (SFX will still try to play):', err);
+  });
+
   (Object.keys(SOURCES) as SfxKey[]).forEach((key) => {
     const pool: AudioPlayer[] = [];
     for (let i = 0; i < POOL_SIZE; i++) {
