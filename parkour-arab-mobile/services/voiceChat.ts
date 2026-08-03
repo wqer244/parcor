@@ -167,6 +167,34 @@ function getEngine(): any | null {
       });
       engine.enableAudio();
 
+      // ── Force loudspeaker routing ────────────────────────────────
+      // ChannelProfileCommunication puts the device's audio session into
+      // "phone call" mode. Left alone, that routes EVERYTHING — the
+      // voice chat itself AND every other sound the app plays (weapon
+      // fire, hit impacts, UI beeps — anything through expo-audio in
+      // services/sfx.ts) — through the tiny earpiece speaker instead of
+      // the main loudspeaker, and noticeably quieter, exactly like
+      // being on a phone call. Explicitly forcing speakerphone-on fixes
+      // both the voice chat AND every game sound effect at once, since
+      // they share the same OS audio output route.
+      try {
+        engine.setDefaultAudioRouteToSpeakerphone(true);
+        engine.setEnableSpeakerphone(true);
+      } catch (err) {
+        console.warn('[voiceChat] failed to force speakerphone routing:', err);
+      }
+      // Recording volume boost — Agora's default (100) is tuned
+      // conservatively for typical phone-call proximity; games are
+      // usually played with the phone held at arm's length in landscape,
+      // further from the mic, so voices came through noticeably faint.
+      // 100–400 is Agora's supported range; 200 (2x) is a solid, safe
+      // "clear and audible" boost without pushing into clipping/distortion.
+      try {
+        engine.adjustRecordingSignalVolume(200);
+      } catch (err) {
+        console.warn('[voiceChat] failed to boost recording volume:', err);
+      }
+
       // These fire for EVERY event Agora reports — logging them here means
       // any join failure (bad App ID, certificate/token mismatch, network
       // block, etc.) shows up in `adb logcat` even without extra setup, and
@@ -254,6 +282,14 @@ export async function joinVoiceChannel(channelName: string, uid: number): Promis
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
     });
     joinedChannel = channelName;
+    // Some Agora SDK versions reset the audio route the moment a channel
+    // is actually joined (as opposed to just when the engine is created),
+    // so re-assert speakerphone here too — belt and suspenders.
+    try {
+      e.setEnableSpeakerphone(true);
+    } catch {
+      // non-fatal — the init-time call above is the primary fix
+    }
     return true;
   } catch (err) {
     setStatus({ state: 'error', message: `joinChannel threw: ${String(err)}` });
