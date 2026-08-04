@@ -475,30 +475,37 @@ export default function GameScreen() {
       {/* ── PvP action buttons — attack always available in the arena,
           pickup only pops up standing near an available weapon crate.
           Aim (hold) zooms in and locks onto whoever's in the crosshair;
-          "التالي" cycles the lock between multiple targets in view. ── */}
+          "التالي" cycles the lock between multiple targets in view.
+          Pickup/next-target/aim sit in ONE horizontal row above the
+          attack button (not stacked vertically) — that way however many
+          of them are visible at once, the whole cluster stays exactly
+          the same height and can never grow up into the HUD row above
+          it; it only ever grows sideways into open space. ── */}
       {pvp.inArena && (
         <View style={styles.pvpBtns} pointerEvents="box-none">
-          {pvp.nearestWeaponId && (
-            <Pressable style={styles.pickupBtn} onPress={doPickup}>
-              <Ionicons name="hand-left" size={18} color="#06060f" />
-              <Text style={styles.pickupBtnTxt}>التقط</Text>
-            </Pressable>
-          )}
-          {pvp.currentWeapon && isAiming && aimCandidatesRef.current.length > 1 && (
-            <Pressable style={styles.nextTargetBtn} onPress={doCycleTarget}>
-              <Ionicons name="sync" size={14} color="#06060f" />
-              <Text style={styles.pickupBtnTxt}>التالي</Text>
-            </Pressable>
-          )}
-          {pvp.currentWeapon && (
-            <Pressable
-              style={[styles.aimBtn, isAiming && styles.aimBtnActive]}
-              onPressIn={doAimStart}
-              onPressOut={doAimEnd}
-            >
-              <Ionicons name="locate" size={24} color={isAiming ? '#06060f' : '#00ffcc'} />
-            </Pressable>
-          )}
+          <View style={styles.pvpTopRow} pointerEvents="box-none">
+            {pvp.nearestWeaponId && (
+              <Pressable style={styles.pickupBtn} onPress={doPickup}>
+                <Ionicons name="hand-left" size={18} color="#06060f" />
+                <Text style={styles.pickupBtnTxt}>التقط</Text>
+              </Pressable>
+            )}
+            {pvp.currentWeapon && isAiming && aimCandidatesRef.current.length > 1 && (
+              <Pressable style={styles.nextTargetBtn} onPress={doCycleTarget}>
+                <Ionicons name="sync" size={14} color="#06060f" />
+                <Text style={styles.pickupBtnTxt}>التالي</Text>
+              </Pressable>
+            )}
+            {pvp.currentWeapon && (
+              <Pressable
+                style={[styles.aimBtn, isAiming && styles.aimBtnActive]}
+                onPressIn={doAimStart}
+                onPressOut={doAimEnd}
+              >
+                <Ionicons name="locate" size={24} color={isAiming ? '#06060f' : '#00ffcc'} />
+              </Pressable>
+            )}
+          </View>
           <Pressable style={styles.attackBtn} onPress={doAttack}>
             <Ionicons name="flash" size={26} color="#06060f" />
           </Pressable>
@@ -902,8 +909,19 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 14,
     bottom: 150,
-    alignItems: 'center',
+    alignItems: 'flex-end',
     gap: 10,
+  },
+  // Holds pickup/next-target/aim side by side. justifyContent:'flex-end'
+  // keeps them pinned to the right edge (same edge as the attack button
+  // below), growing LEFTWARD into open screen space as more of them
+  // become visible — never upward, so this row can never grow tall
+  // enough to reach the HUD row above it.
+  pvpTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
   },
   attackBtn: {
     width: 62,
