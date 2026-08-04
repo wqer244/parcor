@@ -5,26 +5,25 @@
 // Uses expo-audio's createAudioPlayer, which builds a ready-to-play
 // player synchronously (no async loading dance needed before first use).
 //
-// ────────────────────────────────────────────────────────
-// Sound effects — weapon fire, melee swings, hit impacts,
-// target-lock, and weapon pickups.
-// ────────────────────────────────────────────────────────
-// Uses expo-audio's createAudioPlayer, which builds a ready-to-play
-// player synchronously (no async loading dance needed before first use).
-//
-// Every sound gets a small ROUND-ROBIN POOL of players (not just one)
-// for the same reason the renderer keeps pools of tracers/flashes: a
-// railgun or blaster can fire faster than one clip's playback length,
-// and reusing a single player would either cut the previous shot off
-// or silently drop the new one. Cycling through 3-4 players per sound
-// means overlapping shots each get their own voice, just like a real
-// game's audio engine.
+// Every play() call spawns a BRAND-NEW player for that one shot, instead
+// of reusing/seeking a pooled player. That might look wasteful at first
+// glance, but it's deliberate: a freshly created player already sits at
+// position 0, so there's nothing to seek before playing it — no race,
+// no chance of play() firing before a previous seek landed, no "sounds
+// sometimes fire late / sometimes not at all / need a couple of presses
+// before they catch up", which is exactly what seeking a shared player
+// caused (seekTo() is async in expo-audio; calling it right before
+// play() without awaiting it races the two calls against each other).
+// These clips are tiny (well under half a second, a few KB each) and
+// ATTACK_COOLDOWN_MS already caps fire rate to 2/sec per weapon, so the
+// overhead of a new player per shot is negligible — correctness and
+// audible-on-time beat marginal memory savings here.
 //
 // This module has no game-loop dependency and no React state — it's a
 // plain side-effect module, safe to call from anywhere (game.tsx,
 // usePvP.ts, or the low-level per-frame renderer loop in
 // GameRenderer3D.tsx) without re-render cost.
-import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import type { WeaponType } from './game3DPhysics';
 
 type SfxKey = 'blaster' | 'railgun' | 'bow' | 'staff' | 'melee' | 'hit' | 'lock' | 'pickup';
@@ -42,9 +41,20 @@ const SOURCES: Record<SfxKey, number> = {
   pickup: require('../assets/sounds/sfx_pickup.wav'),
 };
 
-const POOL_SIZE = 4;
-const pools = new Map<SfxKey, AudioPlayer[]>();
-const cursors = new Map<SfxKey, number>();
+// Each clip's real length (see the synthesis script that generated
+// them) + a small buffer, in ms — used only to know when it's safe to
+// release the one-shot player's native resources after it finishes.
+const CLIP_MS: Record<SfxKey, number> = {
+  blaster: 300,
+  railgun: 500,
+  bow: 400,
+  staff: 450,
+  melee: 500,
+  hit: 400,
+  lock: 350,
+  pickup: 500,
+};
+
 let ready = false;
 
 // Call once, early (game.tsx does this on mount). Safe to call more
@@ -71,15 +81,20 @@ export function initSfx() {
     console.warn('[sfx] failed to set audio mode (SFX will still try to play):', err);
   });
 
+  // Touch every source once up front so the underlying asset files are
+  // already resolved/cached by the time the first shot is fired — the
+  // very first createAudioPlayer() call for a given source can be a
+  // touch slower than subsequent ones while Metro/the native layer
+  // resolves the bundled asset. This player is discarded immediately;
+  // it's purely a warm-up, not something that gets played.
   (Object.keys(SOURCES) as SfxKey[]).forEach((key) => {
-    const pool: AudioPlayer[] = [];
-    for (let i = 0; i < POOL_SIZE; i++) {
-      const p = createAudioPlayer(SOURCES[key]);
-      p.volume = 1;
-      pool.push(p);
+    try {
+      const warm = createAudioPlayer(SOURCES[key]);
+      warm.remove?.();
+    } catch {
+      // Non-fatal — worst case the very first real shot pays the
+      // resolve cost instead of it happening here.
     }
-    pools.set(key, pool);
-    cursors.set(key, 0);
   });
 }
 
@@ -94,15 +109,19 @@ function distanceVolume(distance?: number) {
 
 function play(key: SfxKey, volume = 1) {
   if (!ready) initSfx();
-  const pool = pools.get(key);
-  if (!pool || pool.length === 0) return;
-  const i = cursors.get(key) ?? 0;
-  cursors.set(key, (i + 1) % pool.length);
-  const player = pool[i];
   try {
+    const player = createAudioPlayer(SOURCES[key]);
     player.volume = Math.max(0, Math.min(1, volume));
-    player.seekTo(0);
     player.play();
+    // Release the native player once the clip has definitely finished —
+    // it was a one-shot, there's nothing left to reuse it for.
+    setTimeout(() => {
+      try {
+        player.remove?.();
+      } catch {
+        // Already gone / backend cleaned it up itself — fine either way.
+      }
+    }, CLIP_MS[key]);
   } catch {
     // Audio backend hiccup (e.g. focus loss) — never let a sound glitch
     // interrupt gameplay.
