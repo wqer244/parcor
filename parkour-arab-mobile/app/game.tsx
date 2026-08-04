@@ -37,7 +37,7 @@ import { SKINS, getSkin } from '@/constants/skins';
 import { usePvP } from '@/hooks/usePvP';
 
 function makeInitState(): PhysState3D {
-  return { x: 0, y: 0.5, z: 0, vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0, finished: false };
+  return { x: 0, y: 0.5, z: 0, vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0, finished: false, checkpointIndex: 0 };
 }
 
 export default function GameScreen() {
