@@ -19,33 +19,25 @@ import { PlayerProvider } from '@/context/PlayerContext';
 
 SplashScreen.preventAutoHideAsync();
 
-// ── Force LTR layout, regardless of the device's Arabic locale ──────────
-// React Native auto-enables I18nManager.isRTL when the OS locale is a
-// right-to-left language (Arabic included) — completely separate from
-// what language the app's own text is in. Once RTL is on, it silently
-// mirrors every `position: 'absolute'` view's `left`/`right` values and
-// reverses every `flexDirection: 'row'` container. That's exactly what
-// was stacking the game's top-right icon cluster (camera/settings/mic),
-// the health bar, and the pickup/aim/attack button column all on top of
-// each other on the SAME physical side of the screen — each of those was
-// coded with a plain left/right offset, and RTL flipped all of them at
-// once, independently of each other, so several unrelated HUD pieces
-// collapsed into the same physical spot.
+// ── Restore normal RTL auto-detection ────────────────────────────────
+// A previous change here force-disabled RTL app-wide to try to fix a
+// button-overlap bug — that turned out not to be the actual cause (the
+// real bug was the PvP button cluster's layout, fixed directly in
+// game.tsx), so forcing LTR was unnecessary and would have affected
+// Arabic UI/text-alignment behavior elsewhere in the app that should
+// stay RTL for Arabic users.
 //
-// A game's control layout (buttons, joystick, HUD) should stay fixed no
-// matter what language is selected — mirroring it by locale wasn't a
-// deliberate design choice here, just an unintended side effect of the
-// device being set to Arabic. This turns that off app-wide; Arabic TEXT
-// itself is untouched (that's plain string content, not layout
-// direction) and still renders and reads correctly everywhere.
+// I18nManager.allowRTL()/forceRTL() persist to native storage, so simply
+// deleting that old code wouldn't have undone it — the device would keep
+// booting in the forced LTR state from before. This explicitly restores
+// the default: RTL follows the device's own locale again, same as if
+// this app had never touched I18nManager at all.
 //
-// NOTE: like any I18nManager change, this only fully applies after the
-// app is completely closed and reopened (a hot reload during development
-// is not enough) — that's a React Native/native-module limitation, not
-// something a JS-only fix can work around.
-if (I18nManager.isRTL) {
-  I18nManager.allowRTL(false);
-  I18nManager.forceRTL(false);
+// NOTE: like any I18nManager change, this only fully takes effect after
+// the app is completely closed and reopened — that's a React Native/
+// native-module limitation, not something a JS-only fix can work around.
+if (!I18nManager.isRTL) {
+  I18nManager.allowRTL(true);
 }
 
 // Lock the whole app to landscape at runtime. `app.json`'s "orientation":
