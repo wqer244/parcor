@@ -139,6 +139,12 @@ export interface PhysState3D {
   onGround: boolean;
   facingAngle: number;
   finished: boolean;
+  // Index into CHECKPOINTS (below) of the furthest checkpoint gate the
+  // player has already reached — where they respawn if they fall, so
+  // dying in Map 2 sends you back to the start of Map 2, not all the way
+  // back to Map 1. Monotonically increases (never decreases, even if the
+  // player walks backward past an already-cleared gate).
+  checkpointIndex: number;
 }
 
 export interface Input3D {
@@ -196,8 +202,75 @@ export const PLATFORMS: Platform3D[] = [
   { id:'p15', x:0,    y:11.0, z:-103.25, width:2.5, height:0.4, depth:2.5, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
   { id:'p16', x:0,    y:12.0, z:-110.25, width:2.2, height:0.4, depth:2.2, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
 
-  // Finish
-  { id:'finish', x:0, y:13.0, z:-119.25, width:6, height:0.6, depth:6,
+  // Map 1 → Map 2 gate. Used to be the finish line — it isn't anymore
+  // (see CHECKPOINTS below and the 3-map redesign notes above the
+  // Section comments). Kept the same gold "milestone" look so reaching
+  // it still visually reads as an accomplishment, just `type:'platform'`
+  // now instead of `'finish'`, so walking onto it no longer ends the
+  // run — it just carries you straight into Map 2's own platforms,
+  // which start immediately past it with no gap to fall through.
+  { id:'map1-gate', x:0, y:13.0, z:-119.25, width:6, height:0.6, depth:6,
+    color:'#5a4000', glowColor:'#ffd700', type:'platform' },
+
+  // ══════════════════════════════════════════════════════════════
+  // MAP 2 — smaller platforms than Map 1 at similar jump distances,
+  // so every gap is a genuinely tighter landing, not a longer jump
+  // (longer jumps risk becoming physically impossible; smaller targets
+  // stay within the same proven-reachable envelope while still raising
+  // difficulty). Checkpoint 1 (CHECKPOINTS[1] below) is the start pad.
+  // ══════════════════════════════════════════════════════════════
+  { id:'m2-start', x:0, y:13.0, z:-126, width:6, height:0.5, depth:6,
+    color:'#0d1830', glowColor:'#3366cc', type:'ground' },
+
+  { id:'m2-p1',  x:1.8,   y:14.3, z:-132.5, width:1.8, height:0.4, depth:1.8, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m2-p2',  x:-1.89, y:15.3, z:-139.5, width:1.7, height:0.4, depth:1.7, color:'#0d2a40', glowColor:'#00aaff', type:'platform' },
+  { id:'m2-p3',  x:1.8,   y:14.6, z:-146,   width:1.8, height:0.4, depth:1.8, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m2-p4',  x:-1.6,  y:16.2, z:-152.65,width:1.6, height:0.4, depth:1.6, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+  { id:'m2-p5',  x:0.89,  y:17.6, z:-159.65,width:1.5, height:0.4, depth:1.5, color:'#400030', glowColor:'#ff00aa', type:'platform' },
+  { id:'m2-p6',  x:-1.8,  y:18.9, z:-166.15,width:1.5, height:0.4, depth:1.5, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m2-p7',  x:0,     y:19.8, z:-173.15,width:2.0, height:0.4, depth:2.0, color:'#0d2a40', glowColor:'#00aaff', type:'platform' }, // breather
+  { id:'m2-p8',  x:-1.8,  y:19.0, z:-179.15,width:1.6, height:0.4, depth:1.6, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m2-p9',  x:1.7,   y:20.1, z:-185.65,width:1.5, height:0.4, depth:1.5, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+  { id:'m2-p10', x:-1.22, y:21.4, z:-192.65,width:1.4, height:0.4, depth:1.4, color:'#400030', glowColor:'#ff00aa', type:'platform' },
+  { id:'m2-p11', x:1.4,   y:20.8, z:-199.15,width:1.5, height:0.4, depth:1.5, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m2-p12', x:-1.5,  y:22.3, z:-205.86,width:1.4, height:0.4, depth:1.4, color:'#0d2a40', glowColor:'#00aaff', type:'platform' },
+  { id:'m2-p13', x:1.6,   y:23.4, z:-212.86,width:1.4, height:0.4, depth:1.4, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m2-p14', x:-1.4,  y:24.4, z:-219.81,width:1.6, height:0.4, depth:1.6, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+
+  // Map 2 → Map 3 gate.
+  { id:'map2-gate', x:0, y:24.4, z:-226.81, width:6, height:0.6, depth:6,
+    color:'#5a4000', glowColor:'#ffd700', type:'platform' },
+
+  // ══════════════════════════════════════════════════════════════
+  // MAP 3 — the hardest tier: smallest platforms, longest gaps (still
+  // within the same physically-validated jump envelope as Map 1/2, just
+  // pushed toward its upper end more consistently), and bigger height
+  // swings. Checkpoint 2 (CHECKPOINTS[2] below) is the start pad. The
+  // final pad is the ONLY real finish line in the whole course now.
+  // ══════════════════════════════════════════════════════════════
+  { id:'m3-start', x:0, y:24.4, z:-233.81, width:6, height:0.5, depth:6,
+    color:'#0d1830', glowColor:'#3366cc', type:'ground' },
+
+  { id:'m3-p1',  x:0.89,  y:25.8, z:-240.81, width:1.5, height:0.4, depth:1.5, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m3-p2',  x:-2.0,  y:27.1, z:-247.62, width:1.4, height:0.4, depth:1.4, color:'#0d2a40', glowColor:'#00aaff', type:'platform' },
+  { id:'m3-p3',  x:1.9,   y:26.1, z:-254.62, width:1.4, height:0.4, depth:1.4, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m3-p4',  x:-1.7,  y:27.8, z:-261.22, width:1.3, height:0.4, depth:1.3, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+  { id:'m3-p5',  x:0.89,  y:29.2, z:-268.22, width:1.3, height:0.4, depth:1.3, color:'#400030', glowColor:'#ff00aa', type:'platform' },
+  { id:'m3-p6',  x:-1.9,  y:30.4, z:-274.72, width:1.2, height:0.4, depth:1.2, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m3-p7',  x:0,     y:31.2, z:-281.77, width:1.8, height:0.4, depth:1.8, color:'#0d2a40', glowColor:'#00aaff', type:'platform' }, // breather
+  { id:'m3-p8',  x:-1.9,  y:30.3, z:-288.27, width:1.3, height:0.4, depth:1.3, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m3-p9',  x:1.22,  y:31.6, z:-295.27, width:1.2, height:0.4, depth:1.2, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+  { id:'m3-p10', x:-1.6,  y:33.0, z:-302.03, width:1.2, height:0.4, depth:1.2, color:'#400030', glowColor:'#ff00aa', type:'platform' },
+  { id:'m3-p11', x:1.5,   y:32.2, z:-308.53, width:1.3, height:0.4, depth:1.3, color:'#0d4040', glowColor:'#00ffcc', type:'platform' },
+  { id:'m3-p12', x:-1.5,  y:33.8, z:-315.18, width:1.2, height:0.4, depth:1.2, color:'#0d2a40', glowColor:'#00aaff', type:'platform' },
+  { id:'m3-p13', x:1.22,  y:35.1, z:-322.18, width:1.1, height:0.4, depth:1.1, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
+  { id:'m3-p14', x:-1.4,  y:36.3, z:-329.04, width:1.3, height:0.4, depth:1.3, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
+
+  // Finish — the ONLY win trigger in the whole course now. This jump
+  // (dz:9, dx:0, dy:+1.0) exactly mirrors Map 1's original, already-
+  // proven p16→finish jump, reused deliberately since it's the same
+  // "small platform → big 6-wide landing pad" shape.
+  { id:'finish', x:0, y:37.3, z:-337.93, width:6, height:0.6, depth:6,
     color:'#5a4000', glowColor:'#ffd700', type:'finish' },
 
   // ── PvP Arena — "Crimson Coliseum" ──────────────────────
@@ -317,7 +390,23 @@ export const PVP_BANNERS: ArenaBanner[] = [
 
 // Distance (|z|) of the finish line from the start — used by the HUD to
 // compute the progress-bar percentage. Keep this in sync with PLATFORMS.
-export const FINISH_DISTANCE = 119.25;
+// Matches the finish platform's z (see 'finish' in PLATFORMS below) — now
+// at the end of Map 3, not Map 1, since finishing Map 1 no longer ends
+// the run. Used only for the progress-percentage HUD bar.
+export const FINISH_DISTANCE = 338;
+
+// Respawn points for the 3-map course — index i is where the player
+// reappears after falling anywhere in Map (i+1). stepPhysics3D advances
+// state.checkpointIndex as the player passes each gate below, and always
+// respawns at CHECKPOINTS[state.checkpointIndex] rather than hardcoding
+// Map 1's origin, so dying in Map 2 or 3 sends you back to that map's
+// own start, not all the way back to the very beginning.
+export interface Checkpoint { x: number; y: number; z: number }
+export const CHECKPOINTS: Checkpoint[] = [
+  { x: 0, y: 0.5,  z: 0 },        // Map 1 start
+  { x: 0, y: 13.5, z: -126 },     // Map 2 start (m2-start pad)
+  { x: 0, y: 24.9, z: -233.81 },  // Map 3 start (m3-start pad)
+];
 
 // ── Physics Step ───────────────────────────────────────────
 export function stepPhysics3D(
@@ -374,9 +463,27 @@ export function stepPhysics3D(
   const newY = y + vy;
   const newZ = z + vz;
 
-  // Respawn if fallen
+  // Checkpoint progress — advance (never regress) as the player passes
+  // each gate's z. A small +3 margin means you have to actually be at
+  // or past the gate, not just technically closer in z while still
+  // mid-jump toward it from the previous map.
+  let checkpointIndex = state.checkpointIndex ?? 0;
+  while (
+    checkpointIndex + 1 < CHECKPOINTS.length &&
+    newZ <= CHECKPOINTS[checkpointIndex + 1].z + 3
+  ) {
+    checkpointIndex++;
+  }
+
+  // Respawn if fallen — at the current map's own checkpoint, not always
+  // back at Map 1's origin.
   if (newY < DEATH_Y) {
-    return { x: 0, y: 0.5, z: 0, vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0, finished: false };
+    const cp = CHECKPOINTS[checkpointIndex];
+    return {
+      x: cp.x, y: cp.y, z: cp.z,
+      vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0,
+      finished: false, checkpointIndex,
+    };
   }
 
   // Platform collision (feet land on top)
@@ -396,10 +503,10 @@ export function stepPhysics3D(
         x: newX, y: p.y, z: newZ,
         vx, vy: 0, vz,
         onGround: true, facingAngle,
-        finished,
+        finished, checkpointIndex,
       };
     }
   }
 
-  return { x: newX, y: newY, z: newZ, vx, vy, vz, onGround: false, facingAngle, finished: false };
+  return { x: newX, y: newY, z: newZ, vx, vy, vz, onGround: false, facingAngle, finished: false, checkpointIndex };
 }
