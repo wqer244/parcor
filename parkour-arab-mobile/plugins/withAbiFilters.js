@@ -10,10 +10,10 @@
 // `reactNativeArchitectures` — and that later assignment overwrote ours.
 //
 // The fix is to set that exact property instead of fighting the template:
-// this writes `reactNativeArchitectures=arm64-v8a` into
-// android/gradle.properties, which is precisely the mechanism the
-// template already reads. This is also the officially documented way
-// React Native itself recommends for shrinking APK size.
+// this writes `reactNativeArchitectures=...` into android/gradle.properties,
+// which is precisely the mechanism the template already reads. This is
+// also the officially documented way React Native itself recommends for
+// controlling which architectures get built.
 //
 // v3 — temporarily widened to 4 architectures while chasing a crash-on-join
 // bug, on the theory that it might be an ABI/missing-native-lib issue.
@@ -23,16 +23,27 @@
 // IllegalStateException from expo-gl's GLView failing to construct via
 // reflection, due to ProGuard/R8 stripping its constructor — fixed
 // separately in app.json's extraProguardRules). ABI was never the problem.
-// Every real device this has been tested on is arm64-v8a, which is true of
-// the overwhelming majority of Android phones sold since ~2017, so keeping
-// the build restricted to just that architecture is safe and keeps the APK
-// ~⅓ the size. If testing on an x86_64 emulator or a very old 32-bit
-// device ever becomes necessary again, add that architecture back here.
+// arm64-v8a-only was assumed safe on the theory that "the overwhelming
+// majority of Android phones sold since ~2017" use it — true, but that
+// silently locked out every OLDER or lower-end phone still on 32-bit ARM
+// (armeabi-v7a), which is common on budget devices and anything from
+// roughly pre-2017. The app simply can't install/run at all on those —
+// there's no fallback, a missing native library is a hard crash, not a
+// graceful degradation.
+//
+// v5 — armeabi-v7a added back. 32-bit ARM devices are exactly the "old,
+// weak hardware" this app needs to support, and every native dependency
+// here (Agora, expo-gl, Reanimated, Hermes) ships armeabi-v7a binaries, so
+// there's no compatibility blocker — only APK size (roughly back up from
+// ~⅓ to ~⅔ of the full 4-architecture size, still meaningfully smaller
+// than shipping x86/x86_64 too, which only matter for emulators/Intel
+// devices, not real old phones).
 // ────────────────────────────────────────────────────────────────────────────
 const { withGradleProperties } = require('@expo/config-plugins');
 
-const ARCHITECTURES = ['arm64-v8a'];
-// If you ever need 32-bit device or emulator support too, use e.g.:
+const ARCHITECTURES = ['arm64-v8a', 'armeabi-v7a'];
+// If you ever need x86/x86_64 emulator support too (not needed for real
+// old-device compatibility, only for testing on an Intel emulator), use:
 // const ARCHITECTURES = ['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'];
 
 function withAbiFilters(config) {
