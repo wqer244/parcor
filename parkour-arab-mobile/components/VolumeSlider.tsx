@@ -11,7 +11,7 @@
 // the JS thread. onChange is still called (via runOnJS) so the parent
 // can persist the value and apply it to actual game/voice volume.
 // ────────────────────────────────────────────────────────────────────────────
-import React, { useState } from 'react';
+import React from 'react';
 import { StyleSheet, Text, View, LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -33,7 +33,6 @@ interface Props {
 }
 
 export function VolumeSlider({ label, icon, value, onChange }: Props) {
-  const [trackWidth, setTrackWidth] = useState(0);
   const trackWidthShared = useSharedValue(0);
   const fillPercent = useSharedValue(value / 100);
 
@@ -50,8 +49,18 @@ export function VolumeSlider({ label, icon, value, onChange }: Props) {
 
   function handleLayout(e: LayoutChangeEvent) {
     const w = e.nativeEvent.layout.width;
-    setTrackWidth(w);
-    trackWidthShared.value = w;
+    // Modal fade-in transitions can trigger a spurious layout pass
+    // reporting width 0 before the real size settles. If that ever won
+    // the race and got stored, EVERY gesture callback's `if (w <= 0)
+    // return;` guard would silently no-op forever — the slider would
+    // look normal but nothing would happen when you dragged or tapped
+    // it, and the knob (only rendered while trackWidth > 0, in the old
+    // version of this component) would vanish and never come back. This
+    // ignores non-positive readings entirely so a stale 0 can never
+    // overwrite a real, already-measured width.
+    if (w > 0) {
+      trackWidthShared.value = w;
+    }
   }
 
   const commit = React.useCallback(
@@ -88,9 +97,13 @@ export function VolumeSlider({ label, icon, value, onChange }: Props) {
   const fillStyle = useAnimatedStyle(() => ({
     width: `${fillPercent.value * 100}%`,
   }));
+  // Reads the shared value (not the plain `trackWidth` state) so the
+  // knob's position is always driven by the exact same width the
+  // gesture math above uses — one source of truth, no chance of the two
+  // ever disagreeing.
   const knobStyle = useAnimatedStyle(() => ({
     transform: [
-      { translateX: fillPercent.value * trackWidth - KNOB_SIZE / 2 },
+      { translateX: fillPercent.value * trackWidthShared.value - KNOB_SIZE / 2 },
     ],
   }));
 
@@ -108,9 +121,9 @@ export function VolumeSlider({ label, icon, value, onChange }: Props) {
           <View style={styles.track}>
             <Animated.View style={[styles.fill, fillStyle]} />
           </View>
-          {trackWidth > 0 && (
-            <Animated.View style={[styles.knob, knobStyle]} />
-          )}
+          {/* Always mounted now — see handleLayout's comment above for
+              why this used to sometimes disappear and never come back. */}
+          <Animated.View style={[styles.knob, knobStyle]} />
         </View>
       </GestureDetector>
     </View>
@@ -160,6 +173,7 @@ const styles = StyleSheet.create({
   },
   knob: {
     position: 'absolute',
+    left: 0,
     width: KNOB_SIZE,
     height: KNOB_SIZE,
     borderRadius: KNOB_SIZE / 2,
