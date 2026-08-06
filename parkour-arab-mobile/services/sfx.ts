@@ -25,6 +25,7 @@
 // GameRenderer3D.tsx) without re-render cost.
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import type { WeaponType } from './game3DPhysics';
+import { getEffectiveSfxVolume } from './audioSettings';
 
 type SfxKey = 'blaster' | 'railgun' | 'bow' | 'staff' | 'melee' | 'hit' | 'lock' | 'pickup';
 
@@ -111,7 +112,11 @@ function play(key: SfxKey, volume = 1) {
   if (!ready) initSfx();
   try {
     const player = createAudioPlayer(SOURCES[key]);
-    player.volume = Math.max(0, Math.min(1, volume));
+    // Distance falloff (for remote players' shots) combined with the
+    // user's own SFX + master volume settings from the sound settings
+    // screen — both apply together, so a far-away shot at 50% SFX
+    // volume ends up quieter than either factor alone.
+    player.volume = Math.max(0, Math.min(1, volume * getEffectiveSfxVolume()));
     player.play();
     // Release the native player once the clip has definitely finished —
     // it was a one-shot, there's nothing left to reuse it for.
