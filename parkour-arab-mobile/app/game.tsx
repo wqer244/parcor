@@ -33,6 +33,12 @@ import {
   MELEE_RANGE,
 } from '@/services/game3DPhysics';
 import { initSfx, playWeaponFire, playHitImpact, playTargetLock, playPickup } from '@/services/sfx';
+import {
+  loadAudioSettings, subscribeAudioSettings,
+  getSfxVolume, getCallVolume, getMasterVolume,
+  setSfxVolume, setCallVolume, setMasterVolume,
+} from '@/services/audioSettings';
+import { VolumeSlider } from '@/components/VolumeSlider';
 import { SKINS, getSkin } from '@/constants/skins';
 import { usePvP } from '@/hooks/usePvP';
 
@@ -153,7 +159,31 @@ export default function GameScreen() {
   const [cameraMode, setCameraMode] = useState<CameraMode>('third');
   const [hasFinished, setHasFinished] = useState(false);
   const [onlinePlayers, setOnlinePlayers] = useState(1);
-  const [settingsVisible, setSettingsVisible] = useState(false);
+  // The settings ("⚙") button now opens a small menu with two options
+  // (skins / sound) instead of jumping straight to the skin picker —
+  // see settingsMenuVisible below.
+  const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
+  const [skinsVisible, setSkinsVisible] = useState(false);
+  const [soundSettingsVisible, setSoundSettingsVisible] = useState(false);
+  // Mirrors services/audioSettings.ts's module-level store into React
+  // state purely so the sliders re-render — audioSettings.ts is the
+  // actual source of truth (and what services/sfx.ts and voiceChat.ts
+  // read from directly), this is just a view of it.
+  const [sfxVol, setSfxVol] = useState(() => Math.round(getSfxVolume() * 100));
+  const [callVol, setCallVol] = useState(() => Math.round(getCallVolume() * 100));
+  const [masterVol, setMasterVol] = useState(() => Math.round(getMasterVolume() * 100));
+  useEffect(() => {
+    loadAudioSettings().then(() => {
+      setSfxVol(Math.round(getSfxVolume() * 100));
+      setCallVol(Math.round(getCallVolume() * 100));
+      setMasterVol(Math.round(getMasterVolume() * 100));
+    });
+    return subscribeAudioSettings(() => {
+      setSfxVol(Math.round(getSfxVolume() * 100));
+      setCallVol(Math.round(getCallVolume() * 100));
+      setMasterVol(Math.round(getMasterVolume() * 100));
+    });
+  }, []);
   const [, forceUpdate] = useState(0);
 
   // Keep remote players ref in sync
@@ -415,7 +445,7 @@ export default function GameScreen() {
           <Ionicons name={CAMERA_INFO[cameraMode].icon} size={20} color="#00ffcc" />
         </Pressable>
 
-        <Pressable style={styles.camBtn} onPress={() => setSettingsVisible(true)}>
+        <Pressable style={styles.camBtn} onPress={() => setSettingsMenuVisible(true)}>
           <Ionicons name="settings-sharp" size={19} color="#00ffcc" />
         </Pressable>
 
@@ -540,16 +570,63 @@ export default function GameScreen() {
         </View>
       </Modal>
 
-      {/* ── Settings / Skin Picker Modal ─────────────────── */}
-      <Modal visible={settingsVisible} transparent animationType="fade" onRequestClose={() => setSettingsVisible(false)}>
+      {/* ── Settings Menu — the ⚙ button's first stop now. Two
+          professionally-iconed options: skins (existing picker) and
+          sound (new volume sliders). ─────────────────── */}
+      <Modal visible={settingsMenuVisible} transparent animationType="fade" onRequestClose={() => setSettingsMenuVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <LinearGradient
+            colors={['#06060f', '#0d0d22', '#06060f']}
+            style={styles.menuCard}
+          >
+            <View style={styles.settingsHeader}>
+              <Text style={styles.settingsTitle}>الإعدادات</Text>
+              <Pressable style={styles.closeBtn} onPress={() => setSettingsMenuVisible(false)}>
+                <Ionicons name="close" size={20} color="#00ffcc" />
+              </Pressable>
+            </View>
+
+            <Pressable
+              style={styles.menuBtn}
+              onPress={() => { setSettingsMenuVisible(false); setSkinsVisible(true); }}
+            >
+              <View style={styles.menuBtnIconWrap}>
+                <Ionicons name="shirt" size={22} color="#00ffcc" />
+              </View>
+              <View style={styles.menuBtnTextWrap}>
+                <Text style={styles.menuBtnTitle}>السكنات</Text>
+                <Text style={styles.menuBtnSubtitle}>غيّر شكل شخصيتك</Text>
+              </View>
+              <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.35)" />
+            </Pressable>
+
+            <Pressable
+              style={styles.menuBtn}
+              onPress={() => { setSettingsMenuVisible(false); setSoundSettingsVisible(true); }}
+            >
+              <View style={styles.menuBtnIconWrap}>
+                <Ionicons name="volume-high" size={22} color="#00ffcc" />
+              </View>
+              <View style={styles.menuBtnTextWrap}>
+                <Text style={styles.menuBtnTitle}>الأصوات ومؤثرات صوتية</Text>
+                <Text style={styles.menuBtnSubtitle}>مستوى صوت اللعبة والمكالمات</Text>
+              </View>
+              <Ionicons name="chevron-back" size={18} color="rgba(255,255,255,0.35)" />
+            </Pressable>
+          </LinearGradient>
+        </View>
+      </Modal>
+
+      {/* ── Skin Picker Modal ─────────────────── */}
+      <Modal visible={skinsVisible} transparent animationType="fade" onRequestClose={() => setSkinsVisible(false)}>
         <View style={styles.modalOverlay}>
           <LinearGradient
             colors={['#06060f', '#0d0d22', '#06060f']}
             style={styles.settingsCard}
           >
             <View style={styles.settingsHeader}>
-              <Text style={styles.settingsTitle}>الإعدادات</Text>
-              <Pressable style={styles.closeBtn} onPress={() => setSettingsVisible(false)}>
+              <Text style={styles.settingsTitle}>السكنات</Text>
+              <Pressable style={styles.closeBtn} onPress={() => setSkinsVisible(false)}>
                 <Ionicons name="close" size={20} color="#00ffcc" />
               </Pressable>
             </View>
@@ -587,7 +664,49 @@ export default function GameScreen() {
               })}
             </ScrollView>
 
-            <Pressable style={styles.doneBtn} onPress={() => setSettingsVisible(false)}>
+            <Pressable style={styles.doneBtn} onPress={() => setSkinsVisible(false)}>
+              <Text style={styles.doneBtnTxt}>تم</Text>
+            </Pressable>
+          </LinearGradient>
+        </View>
+      </Modal>
+
+      {/* ── Sound Settings Modal — SFX / call / master volume ─── */}
+      <Modal visible={soundSettingsVisible} transparent animationType="fade" onRequestClose={() => setSoundSettingsVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <LinearGradient
+            colors={['#06060f', '#0d0d22', '#06060f']}
+            style={styles.soundCard}
+          >
+            <View style={styles.settingsHeader}>
+              <Text style={styles.settingsTitle}>الأصوات ومؤثرات صوتية</Text>
+              <Pressable style={styles.closeBtn} onPress={() => setSoundSettingsVisible(false)}>
+                <Ionicons name="close" size={20} color="#00ffcc" />
+              </Pressable>
+            </View>
+
+            <View style={styles.soundBody}>
+              <VolumeSlider
+                label="مؤثرات صوتية"
+                icon={<Ionicons name="flash" size={16} color="#00ffcc" />}
+                value={sfxVol}
+                onChange={(v) => { setSfxVol(v); setSfxVolume(v / 100); }}
+              />
+              <VolumeSlider
+                label="مكالمات"
+                icon={<Ionicons name="call" size={16} color="#00ffcc" />}
+                value={callVol}
+                onChange={(v) => { setCallVol(v); setCallVolume(v / 100); }}
+              />
+              <VolumeSlider
+                label="جميع الأصوات"
+                icon={<Ionicons name="volume-high" size={16} color="#00ffcc" />}
+                value={masterVol}
+                onChange={(v) => { setMasterVol(v); setMasterVolume(v / 100); }}
+              />
+            </View>
+
+            <Pressable style={styles.doneBtn} onPress={() => setSoundSettingsVisible(false)}>
               <Text style={styles.doneBtnTxt}>تم</Text>
             </Pressable>
           </LinearGradient>
@@ -750,6 +869,59 @@ const styles = StyleSheet.create({
     padding: 20,
     borderWidth: 1.5,
     borderColor: 'rgba(0,255,204,0.25)',
+  },
+  // ── Settings menu (skins / sound) ──
+  menuCard: {
+    width: '82%',
+    maxWidth: 380,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,255,204,0.25)',
+  },
+  menuBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,255,204,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,255,204,0.18)',
+  },
+  menuBtnIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(0,255,204,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuBtnTextWrap: {
+    flex: 1,
+  },
+  menuBtnTitle: {
+    color: '#e8faf5',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  menuBtnSubtitle: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  // ── Sound settings modal ──
+  soundCard: {
+    width: '86%',
+    maxWidth: 420,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,255,204,0.25)',
+  },
+  soundBody: {
+    marginTop: 18,
   },
   settingsHeader: {
     flexDirection: 'row',
