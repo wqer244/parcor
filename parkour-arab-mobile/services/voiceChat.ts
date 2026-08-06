@@ -102,6 +102,15 @@ async function fetchAgoraToken(channelName: string, uid: number): Promise<string
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let engine: any = null;
 let joinedChannel: string | null = null;
+// Playback (call) volume, in Agora's own 0-400 units. Set via
+// setCallPlaybackVolume() below (driven by the new settings slider in
+// game.tsx) — stored here so it can be applied immediately if the engine
+// already exists, or the moment it's created if a volume was set before
+// the player ever joined a channel. 200 is the pre-existing default boost
+// this already had hardcoded before it became user-adjustable — keeping
+// it as the fallback means nobody's experience changes until they
+// actually touch the new slider.
+let pendingPlaybackVolume: number | null = null;
 
 // ── Debug status — surfaced on-screen in game.tsx, since there's no way
 //    to see device logs remotely. This is the fastest way to tell WHICH
@@ -193,6 +202,14 @@ function getEngine(): any | null {
         engine.adjustRecordingSignalVolume(200);
       } catch (err) {
         console.warn('[voiceChat] failed to boost recording volume:', err);
+      }
+      // Playback (call) volume — apply whatever was set via
+      // setCallPlaybackVolume() before the engine existed, defaulting to
+      // the same 200 this used to be hardcoded to.
+      try {
+        engine.adjustPlaybackSignalVolume(pendingPlaybackVolume ?? 200);
+      } catch (err) {
+        console.warn('[voiceChat] failed to set initial playback volume:', err);
       }
 
       // These fire for EVERY event Agora reports — logging them here means
@@ -318,6 +335,25 @@ export function setVoiceMuted(muted: boolean): void {
     engine?.muteLocalAudioStream(muted);
   } catch (err) {
     console.warn('[voiceChat] setVoiceMuted failed:', err);
+  }
+}
+
+/** Sets how loud OTHER players' voices sound to you (0..1, mapped to
+ *  Agora's own 0-400 playback-volume range — 1.0 here means "the loudest
+ *  boost Agora allows", not "Agora's own unboosted default"). Safe to
+ *  call before the voice engine exists yet (e.g. from the settings
+ *  screen before ever joining a channel) — the value is remembered and
+ *  applied automatically the moment the engine is created. */
+export function setCallPlaybackVolume(percent0to1: number): void {
+  if (!isVoiceAvailable()) return;
+  const agoraVal = Math.round(Math.max(0, Math.min(1, percent0to1)) * 400);
+  pendingPlaybackVolume = agoraVal;
+  if (engine) {
+    try {
+      engine.adjustPlaybackSignalVolume(agoraVal);
+    } catch (err) {
+      console.warn('[voiceChat] setCallPlaybackVolume failed:', err);
+    }
   }
 }
 
