@@ -127,6 +127,12 @@ export interface Platform3D {
   // dress them with armor-panel trim / corner beacons instead of the
   // plain glowing blocks used for the parkour course.
   arena?: boolean;
+  // Marks Map 4's "Crystal Sanctuary" pieces so the renderer can dress
+  // them with a floating shard + hover-ring (see buildPlatformMeshes in
+  // GameRenderer3D.tsx) instead of the plain block+strip used by Maps
+  // 1-3 — this is what makes Map 4 read as a different place rather
+  // than "the same cubes, but smaller."
+  theme?: 'crystal';
 }
 
 export interface PhysState3D {
@@ -266,12 +272,66 @@ export const PLATFORMS: Platform3D[] = [
   { id:'m3-p13', x:1.22,  y:35.1, z:-322.18, width:1.1, height:0.4, depth:1.1, color:'#3d2a00', glowColor:'#ffaa00', type:'platform' },
   { id:'m3-p14', x:-1.4,  y:36.3, z:-329.04, width:1.3, height:0.4, depth:1.3, color:'#2a0040', glowColor:'#aa00ff', type:'platform' },
 
+  // Map 3 → Map 4 gate. Used to be the finish line — it isn't anymore
+  // (see MAP 4 below). Same gold "milestone" treatment as the other two
+  // gates, `type:'platform'` so it just carries you into Map 4's own
+  // platforms instead of ending the run.
+  { id:'map3-gate', x:0, y:37.3, z:-337.93, width:6, height:0.6, depth:6,
+    color:'#5a4000', glowColor:'#ffd700', type:'platform' },
+
+  // ══════════════════════════════════════════════════════════════
+  // MAP 4 — "الحرم البلوري" (The Crystal Sanctuary). Deliberately a
+  // different *place*, not just smaller versions of Maps 1-3: a single
+  // coherent amethyst-and-gold palette instead of the rainbow-per-
+  // platform scheme used earlier, every platform gets a floating
+  // crystal shard + hover-ring (theme:'crystal', see buildPlatformMeshes
+  // in GameRenderer3D.tsx), the local fog/sky tint shifts to violet as
+  // the player enters this zone, and there's a genuine shape change —
+  // two long crystal "bridge" planks — partway through, instead of only
+  // ever landing on squarish islands.
+  //
+  // Difficulty: smallest footprints in the whole course (down to 1.2,
+  // vs Map 3's 1.1 floor) and back-to-back tough jumps with almost no
+  // breathers, but every single jump reuses a forward/height combo
+  // that's already proven reachable elsewhere in this file (see the
+  // GRAVITY/JUMP_VELOCITY notes at the top and the map1-gate/finish
+  // jumps below) — hard, not impossible. Checkpoint 3 (CHECKPOINTS[3]
+  // below) is the start pad. The final pad is the ONLY real finish
+  // line in the whole course now.
+  // ══════════════════════════════════════════════════════════════
+  { id:'m4-start', x:0, y:37.3, z:-345, width:6, height:0.5, depth:6,
+    color:'#140d28', glowColor:'#8a5cff', type:'ground', theme:'crystal' },
+
+  { id:'m4-p1',  x:2.4,  y:38.6, z:-352.2, width:1.6, height:0.4, depth:1.6, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p2',  x:-2.0, y:39.9, z:-359.4, width:1.5, height:0.4, depth:1.5, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p3',  x:2.6,  y:38.7, z:-366.4, width:1.5, height:0.4, depth:1.5, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p4',  x:-2.0, y:40.3, z:-373.4, width:1.4, height:0.4, depth:1.4, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p5',  x:2.6,  y:39.4, z:-380.2, width:1.4, height:0.4, depth:1.4, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p6',  x:0,    y:40.8, z:-386.9, width:2.0, height:0.4, depth:2.0, color:'#2a0040', glowColor:'#e08cff', type:'platform', theme:'crystal' }, // breather
+
+  // Twin crystal bridge — long thin planks instead of small islands, a
+  // deliberate silhouette change so Map 4 doesn't read as "the same
+  // cube language, just smaller" the way Map 3 does over Map 2.
+  { id:'m4-bridge1', x:0,   y:41.4, z:-393.1, width:1.3, height:0.4, depth:4.5, color:'#0d3040', glowColor:'#7ef9ff', type:'platform', theme:'crystal' },
+  { id:'m4-bridge2', x:0.3, y:41.9, z:-399.6, width:1.3, height:0.4, depth:4.5, color:'#0d3040', glowColor:'#7ef9ff', type:'platform', theme:'crystal' },
+
+  { id:'m4-p7',  x:-2.4, y:43.2, z:-406.4, width:1.4, height:0.4, depth:1.4, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p8',  x:2.6,  y:42.1, z:-413.2, width:1.4, height:0.4, depth:1.4, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p9',  x:-2.0, y:43.8, z:-420.0, width:1.3, height:0.4, depth:1.3, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p10', x:0,    y:44.8, z:-426.6, width:1.9, height:0.4, depth:1.9, color:'#2a0040', glowColor:'#e08cff', type:'platform', theme:'crystal' }, // breather
+  { id:'m4-p11', x:2.6,  y:43.8, z:-433.4, width:1.3, height:0.4, depth:1.3, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p12', x:-2.0, y:45.4, z:-440.2, width:1.3, height:0.4, depth:1.3, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+  { id:'m4-p13', x:2.4,  y:44.3, z:-447.0, width:1.2, height:0.4, depth:1.2, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p14', x:-1.1, y:46.1, z:-454.3, width:1.6, height:0.4, depth:1.6, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+
   // Finish — the ONLY win trigger in the whole course now. This jump
-  // (dz:9, dx:0, dy:+1.0) exactly mirrors Map 1's original, already-
-  // proven p16→finish jump, reused deliberately since it's the same
-  // "small platform → big 6-wide landing pad" shape.
-  { id:'finish', x:0, y:37.3, z:-337.93, width:6, height:0.6, depth:6,
-    color:'#5a4000', glowColor:'#ffd700', type:'finish' },
+  // (dz:8.9, dx:0, dy:+1.0) exactly mirrors the proven map-gate/finish
+  // jump shape reused throughout this file ("small platform → big
+  // landing pad", dx0), kept deliberately unchanged even here at the
+  // very last jump of the run so it stays inside the fully-validated
+  // envelope.
+  { id:'finish', x:-1.1, y:47.1, z:-463.2, width:6.5, height:0.6, depth:6.5,
+    color:'#5a4000', glowColor:'#ffd700', type:'finish', theme:'crystal' },
 
   // ── PvP Arena — "Crimson Coliseum" ──────────────────────
   // Positioned behind spawn (+Z), opposite the parkour course (-Z) —
@@ -391,21 +451,22 @@ export const PVP_BANNERS: ArenaBanner[] = [
 // Distance (|z|) of the finish line from the start — used by the HUD to
 // compute the progress-bar percentage. Keep this in sync with PLATFORMS.
 // Matches the finish platform's z (see 'finish' in PLATFORMS below) — now
-// at the end of Map 3, not Map 1, since finishing Map 1 no longer ends
-// the run. Used only for the progress-percentage HUD bar.
-export const FINISH_DISTANCE = 338;
+// at the end of Map 4, not Map 1, since finishing an earlier map no
+// longer ends the run. Used only for the progress-percentage HUD bar.
+export const FINISH_DISTANCE = 463.2;
 
-// Respawn points for the 3-map course — index i is where the player
+// Respawn points for the 4-map course — index i is where the player
 // reappears after falling anywhere in Map (i+1). stepPhysics3D advances
 // state.checkpointIndex as the player passes each gate below, and always
 // respawns at CHECKPOINTS[state.checkpointIndex] rather than hardcoding
-// Map 1's origin, so dying in Map 2 or 3 sends you back to that map's
-// own start, not all the way back to the very beginning.
+// Map 1's origin, so dying in Map 2, 3, or 4 sends you back to that
+// map's own start, not all the way back to the very beginning.
 export interface Checkpoint { x: number; y: number; z: number }
 export const CHECKPOINTS: Checkpoint[] = [
   { x: 0, y: 0.5,  z: 0 },        // Map 1 start
   { x: 0, y: 13.5, z: -126 },     // Map 2 start (m2-start pad)
   { x: 0, y: 24.9, z: -233.81 },  // Map 3 start (m3-start pad)
+  { x: 0, y: 37.8, z: -345 },     // Map 4 start (m4-start pad)
 ];
 
 // ── Physics Step ───────────────────────────────────────────
