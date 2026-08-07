@@ -298,10 +298,14 @@ function getStandardMat(opts: {
 }
 
 // ── Platform meshes ────────────────────────────────────────
-// Returned so the caller can spin the Map 4 crystal decor every frame —
-// see `crystalSpinners` usage in the animate() loop below.
+// Built per-chunk now (see the ChunkManager below) instead of once for
+// the whole course — a level this long can't afford to build every
+// platform's meshes (plus Map 4's shard/ring pairs) at startup, so this
+// function is called once per chunk, only for the platforms that chunk
+// actually contains, and everything it creates is returned in `objects`
+// so the chunk can be fully torn down again when the player moves away.
 //
-// `dynamicPlatforms` covers Map 4's new moving/blinking obstacles
+// `dynamicPlatforms` covers Map 4's moving/blinking obstacles
 // (m4-move*/m4-blink* in PLATFORMS): every visual piece built for a
 // given platform (box, glow strip, and — for crystal-themed ones — the
 // floating shard + hover ring) is recorded with its fixed offset from
@@ -310,17 +314,18 @@ function getStandardMat(opts: {
 // re-evaluating the platform's live position/solidity.
 interface DynamicPlatformPart { obj: THREE.Object3D; offsetX: number; offsetY: number; offsetZ: number }
 interface DynamicPlatform { platform: Platform3D; parts: DynamicPlatformPart[] }
-interface PlatformMeshResult { crystalSpinners: THREE.Object3D[]; dynamicPlatforms: DynamicPlatform[] }
+interface PlatformMeshResult {
+  crystalSpinners: THREE.Object3D[];
+  dynamicPlatforms: DynamicPlatform[];
+  objects: THREE.Object3D[]; // every top-level object added to the scene — dispose these on unload
+}
 
-function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
+function buildPlatformMeshes(scene: THREE.Scene, platforms: Platform3D[]): PlatformMeshResult {
   // Arena "armor panel" trim (bevel + 4 corner beacons per arena platform)
-  // used to be one Mesh per piece — ~65 separate draw calls for just 13
-  // platforms. Real engines handle repeated static props with GPU
-  // instancing: one shared geometry, one draw call, N per-instance
-  // transforms. We collect the transforms while walking PLATFORMS below,
-  // then submit them as two InstancedMesh objects after the loop — the
-  // draw-call cost stays at 2 no matter how many arena platforms get
-  // added in the future.
+  // — one InstancedMesh per chunk for the bevels and one per beacon
+  // color, so a chunk with several arena platforms still costs only a
+  // couple of draw calls, and the whole thing disposes cleanly as a unit
+  // when that chunk unloads.
   const bevelDummy = new THREE.Object3D();
   const bevelTransforms: { x: number; y: number; z: number; sx: number; sz: number }[] = [];
   const beaconDummy = new THREE.Object3D();
@@ -334,8 +339,10 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
   const crystalSpinners: THREE.Object3D[] = [];
   // Obstacle platforms (move and/or blink) — see DynamicPlatform above.
   const dynamicPlatforms: DynamicPlatform[] = [];
+  const objects: THREE.Object3D[] = [];
+  const add = (obj: THREE.Object3D) => { scene.add(obj); objects.push(obj); };
 
-  for (const p of PLATFORMS) {
+  for (const p of platforms) {
     // Accumulates every visual piece built for THIS platform, in case it
     // turns out to be a moving/blinking one (checked at the bottom of
     // the loop body, once shard/hoverRing have also had a chance to add
@@ -351,7 +358,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(p.width, p.height, p.depth), mat);
     mesh.position.set(p.x, p.y - p.height / 2, p.z);
-    scene.add(mesh);
+    add(mesh);
     dynParts.push({ obj: mesh, offsetX: 0, offsetY: -p.height / 2, offsetZ: 0 });
 
     // Top glow strip
@@ -362,7 +369,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     });
     const strip = new THREE.Mesh(new THREE.BoxGeometry(p.width + 0.06, 0.035, p.depth + 0.06), stripMat);
     strip.position.set(p.x, p.y + 0.01, p.z);
-    scene.add(strip);
+    add(strip);
     dynParts.push({ obj: strip, offsetX: 0, offsetY: 0.01, offsetZ: 0 });
 
     // Finish pillars
@@ -372,7 +379,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       for (const px of [-2.3, 2.3]) {
         const pillar = new THREE.Mesh(pillarGeo, pillarMat);
         pillar.position.set(p.x + px, p.y + 1.5, p.z);
-        scene.add(pillar);
+        add(pillar);
       }
 
       // Map 4's finish gets a grander "victory portal" treatment: a big
@@ -384,7 +391,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
         const portalMat = getStandardMat({ color: 0xffd700, emissive: 0xffd700, emissiveIntensity: 1.8 });
         const portal = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.09, 12, 40), portalMat);
         portal.position.set(p.x, p.y + 3.1, p.z - 0.4);
-        scene.add(portal);
+        add(portal);
         crystalSpinners.push(portal);
 
         const crownGeo = new THREE.OctahedronGeometry(0.22, 0);
@@ -396,7 +403,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
           shard.userData.orbitAngle = angle;
           shard.userData.orbitCenter = { x: p.x, y: p.y + 3.1, z: p.z - 0.4 };
           shard.position.set(p.x + Math.cos(angle) * 2.6, p.y + 3.1, p.z - 0.4 + Math.sin(angle) * 2.6);
-          scene.add(shard);
+          add(shard);
           crystalSpinners.push(shard);
         }
       }
@@ -418,7 +425,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       });
       const shard = new THREE.Mesh(shardGeo, shardMat);
       shard.position.set(p.x, p.y + 0.75 + shardSize, p.z);
-      scene.add(shard);
+      add(shard);
       crystalSpinners.push(shard);
       dynParts.push({ obj: shard, offsetX: 0, offsetY: 0.75 + shardSize, offsetZ: 0 });
 
@@ -428,7 +435,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       const hoverRing = new THREE.Mesh(ringGeo, ringMat);
       hoverRing.rotation.x = Math.PI / 2;
       hoverRing.position.set(p.x, p.y - p.height - 0.3, p.z);
-      scene.add(hoverRing);
+      add(hoverRing);
       crystalSpinners.push(hoverRing);
       dynParts.push({ obj: hoverRing, offsetX: 0, offsetY: -p.height - 0.3, offsetZ: 0 });
     }
@@ -461,8 +468,8 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     }
   }
 
-  // One draw call for every bevel panel, regardless of count. Each panel
-  // is a unit box scaled per-instance to that platform's footprint.
+  // One draw call for every bevel panel in this chunk. Each panel is a
+  // unit box scaled per-instance to that platform's footprint.
   if (bevelTransforms.length) {
     const bevelMat = getStandardMat({ color: 0x0a0a10, metalness: 0.9, roughness: 0.3 });
     const bevelMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.05, 1), bevelMat, bevelTransforms.length);
@@ -473,17 +480,15 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       bevelMesh.setMatrixAt(i, bevelDummy.matrix);
     });
     bevelMesh.instanceMatrix.needsUpdate = true;
-    scene.add(bevelMesh);
+    add(bevelMesh);
   }
 
-  // One draw call per unique beacon color. Arena zones only use a handful
-  // of accent colors (~7 across the whole map), so grouping beacons by
-  // color and instancing each group collapses 50+ individual meshes down
-  // to a handful of draw calls. (Using InstancedMesh's per-instance
-  // vertex color instead was tempting, but three.js's standard shader only
-  // multiplies instance color into the diffuse channel, not emissive — it
-  // would silently wash every beacon out to the same white glow. Grouping
-  // by real material color is both simpler and correct.)
+  // One draw call per unique beacon color present in this chunk.
+  // (Using InstancedMesh's per-instance vertex color instead was
+  // tempting, but three.js's standard shader only multiplies instance
+  // color into the diffuse channel, not emissive — it would silently
+  // wash every beacon out to the same white glow. Grouping by real
+  // material color is both simpler and correct.)
   if (beaconTransforms.length) {
     const beaconGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.22, 8);
     const groups = new Map<number, { x: number; y: number; z: number }[]>();
@@ -501,28 +506,31 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
         beaconMesh.setMatrixAt(i, beaconDummy.matrix);
       });
       beaconMesh.instanceMatrix.needsUpdate = true;
-      scene.add(beaconMesh);
+      add(beaconMesh);
     }
   }
 
-  return { crystalSpinners, dynamicPlatforms };
+  return { crystalSpinners, dynamicPlatforms, objects };
 }
 
 // ── Hazard meshes ──────────────────────────────────────────
 // Map 4's spike hazards (HAZARDS in game3DPhysics.ts): a small cluster
 // of thorn-like cones around a glowing core, danger-red so it reads as
 // "don't touch" at a glance rather than blending in with the amethyst/
-// gold crystal platforms. Returned as one Group per hazard, positioned
-// every frame in the animate() loop (getHazardPosition handles the ones
-// that patrol via `move`; static ones just sit at rest).
+// gold crystal platforms. Also built per-chunk (see ChunkManager) —
+// `objects` holds the top-level Group per hazard for disposal. Returned
+// as one Group per hazard, positioned every frame in the animate() loop
+// (getHazardPosition handles the ones that patrol via `move`; static
+// ones just sit at rest).
 interface HazardVisual { hazard: Hazard3D; group: THREE.Group }
 
-function buildHazardMeshes(scene: THREE.Scene): { hazardVisuals: HazardVisual[] } {
+function buildHazardMeshes(scene: THREE.Scene, hazards: Hazard3D[]): { hazardVisuals: HazardVisual[]; objects: THREE.Object3D[] } {
   const hazardVisuals: HazardVisual[] = [];
+  const objects: THREE.Object3D[] = [];
   const coreMat = getStandardMat({ color: 0xff2a4a, emissive: 0xff2a4a, emissiveIntensity: 2.2, metalness: 0.3, roughness: 0.15 });
   const spikeMat = getStandardMat({ color: 0x8a0018, emissive: 0xff2a4a, emissiveIntensity: 1.4, metalness: 0.4, roughness: 0.2 });
 
-  for (const h of HAZARDS) {
+  for (const h of hazards) {
     const group = new THREE.Group();
     group.position.set(h.x, h.y, h.z);
 
@@ -546,10 +554,132 @@ function buildHazardMeshes(scene: THREE.Scene): { hazardVisuals: HazardVisual[] 
     group.add(glow);
 
     scene.add(group);
+    objects.push(group);
     hazardVisuals.push({ hazard: h, group });
   }
 
-  return { hazardVisuals };
+  return { hazardVisuals, objects };
+}
+
+// ── Level streaming (chunked loading) ───────────────────────
+// Building every platform/hazard mesh for the whole course at once (the
+// old behavior) got noticeably worse as Map 4 grew — more draw calls,
+// more objects animated every frame (crystal spinners, movers,
+// blinkers), all sitting in the scene graph even while the player is
+// nowhere near most of them. Real long-running games solve this with
+// level streaming: only the geometry near the player is actually
+// loaded, and it's loaded/unloaded as they move — never the whole level
+// at once. This does the same thing here, bucketed by Z-distance along
+// the course.
+const CHUNK_SIZE = 45; // world units of Z per chunk — a handful of platforms each
+const CHUNK_LOAD_AHEAD = 2; // chunks to keep loaded ahead of the player
+const CHUNK_LOAD_BEHIND = 1; // chunks to keep loaded behind (backtracking, respawn safety)
+
+function chunkIndexForZ(z: number): number {
+  return Math.floor(z / CHUNK_SIZE);
+}
+
+// Computed once at module load (not per-frame) — grouping ~100
+// platforms/hazards by chunk is cheap and never needs to happen again
+// since PLATFORMS/HAZARDS are static data.
+function groupByChunk<T extends { z: number }>(items: T[]): Map<number, T[]> {
+  const map = new Map<number, T[]>();
+  for (const item of items) {
+    const idx = chunkIndexForZ(item.z);
+    const arr = map.get(idx) ?? [];
+    arr.push(item);
+    map.set(idx, arr);
+  }
+  return map;
+}
+const PLATFORMS_BY_CHUNK = groupByChunk(PLATFORMS);
+const HAZARDS_BY_CHUNK = groupByChunk(HAZARDS);
+
+// Recursively frees GPU geometry buffers for an object and its children.
+// Materials are NOT disposed here — they come from the shared
+// `standardMatCache` above and stay alive for other chunks (and any
+// chunk that gets reloaded later) to keep reusing.
+function disposeObjectGeometry(obj: THREE.Object3D) {
+  obj.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.geometry) mesh.geometry.dispose();
+  });
+}
+
+interface LoadedChunk {
+  crystalSpinners: THREE.Object3D[];
+  dynamicPlatforms: DynamicPlatform[];
+  hazardVisuals: HazardVisual[];
+  objects: THREE.Object3D[]; // everything to remove + dispose on unload
+}
+
+// Owns which chunks currently have meshes in the scene, and keeps that
+// set in sync with the player's position. `ensureAround(z)` is meant to
+// be called every frame with the player's current Z — it's cheap
+// (a couple of integer comparisons) when nothing needs to change, and
+// only does real work (building/tearing down meshes) right when the
+// player crosses a chunk boundary.
+class ChunkManager {
+  private scene: THREE.Scene;
+  private loaded = new Map<number, LoadedChunk>();
+  private lastChunk: number | null = null;
+
+  constructor(scene: THREE.Scene) {
+    this.scene = scene;
+  }
+
+  private loadChunk(idx: number) {
+    if (this.loaded.has(idx)) return;
+    const platforms = PLATFORMS_BY_CHUNK.get(idx) ?? [];
+    const hazards = HAZARDS_BY_CHUNK.get(idx) ?? [];
+    const platResult = buildPlatformMeshes(this.scene, platforms);
+    const hazResult = buildHazardMeshes(this.scene, hazards);
+    this.loaded.set(idx, {
+      crystalSpinners: platResult.crystalSpinners,
+      dynamicPlatforms: platResult.dynamicPlatforms,
+      hazardVisuals: hazResult.hazardVisuals,
+      objects: [...platResult.objects, ...hazResult.objects],
+    });
+  }
+
+  private unloadChunk(idx: number) {
+    const chunk = this.loaded.get(idx);
+    if (!chunk) return;
+    for (const obj of chunk.objects) {
+      this.scene.remove(obj);
+      disposeObjectGeometry(obj);
+    }
+    this.loaded.delete(idx);
+  }
+
+  // Call every frame with the player's current world Z. No-ops unless
+  // the player has moved into a new chunk since the last call.
+  ensureAround(z: number) {
+    const current = chunkIndexForZ(z);
+    if (current === this.lastChunk) return;
+    this.lastChunk = current;
+
+    const need = new Set<number>();
+    for (let i = current - CHUNK_LOAD_BEHIND; i <= current + CHUNK_LOAD_AHEAD; i++) need.add(i);
+
+    for (const idx of need) this.loadChunk(idx);
+    for (const idx of Array.from(this.loaded.keys())) {
+      if (!need.has(idx)) this.unloadChunk(idx);
+    }
+  }
+
+  // Iterators for the animate() loop — combine every currently-loaded
+  // chunk's dynamic content instead of one fixed array for the whole
+  // course.
+  *allCrystalSpinners(): IterableIterator<THREE.Object3D> {
+    for (const chunk of this.loaded.values()) yield* chunk.crystalSpinners;
+  }
+  *allDynamicPlatforms(): IterableIterator<DynamicPlatform> {
+    for (const chunk of this.loaded.values()) yield* chunk.dynamicPlatforms;
+  }
+  *allHazardVisuals(): IterableIterator<HazardVisual> {
+    for (const chunk of this.loaded.values()) yield* chunk.hazardVisuals;
+  }
 }
 
 // ── Arena decor — pillars, perimeter walls, entrance gate, floor grid ──
@@ -1009,9 +1139,13 @@ function NativeRenderer({
       back.position.set(0, 18, -100);
       scene.add(back);
 
-      // World
-      const { crystalSpinners, dynamicPlatforms } = buildPlatformMeshes(scene);
-      const { hazardVisuals } = buildHazardMeshes(scene);
+      // World — platforms/hazards are streamed in by chunk (see
+      // ChunkManager above) rather than built all at once; only the
+      // chunks around the player's starting position load here, and
+      // ensureAround() keeps that window moving with them every frame
+      // down in animate().
+      const chunkManager = new ChunkManager(scene);
+      chunkManager.ensureAround(physStateRef.current.z);
       buildArenaDecor(scene);
       buildStarfield(scene);
 
@@ -1476,9 +1610,16 @@ function NativeRenderer({
         (scene.fog as THREE.FogExp2).color.copy(fogScratch);
         renderer.setClearColor(fogScratch);
 
+        // Level streaming — keep only the chunks near the player loaded.
+        // Cheap to call every frame: it's a no-op unless `s.z` has
+        // crossed into a new chunk since the last check (see
+        // ChunkManager.ensureAround).
+        chunkManager.ensureAround(s.z);
+
         // Map 4 crystal decor — slow ambient spin on every shard/ring,
-        // plus the finish portal's orbiting crown shards.
-        for (const obj of crystalSpinners) {
+        // plus the finish portal's orbiting crown shards. Only iterates
+        // objects from currently-loaded chunks.
+        for (const obj of chunkManager.allCrystalSpinners()) {
           obj.rotation.y += 0.012;
           obj.rotation.x += 0.006;
           const orbit = obj.userData.orbitCenter as { x: number; y: number; z: number } | undefined;
@@ -1496,9 +1637,10 @@ function NativeRenderer({
         // Map 4 obstacles — moving/blinking platforms and spike hazards.
         // Uses the same `now/1000` time basis as stepPhysics3D's default
         // `t` (both read Date.now()), so what's rendered here always
-        // matches what the physics step just collided against.
+        // matches what the physics step just collided against. Only
+        // currently-loaded chunks' obstacles are iterated.
         const obstacleT = now / 1000;
-        for (const dp of dynamicPlatforms) {
+        for (const dp of chunkManager.allDynamicPlatforms()) {
           const pos = getPlatformPosition(dp.platform, obstacleT);
           const solid = isPlatformSolid(dp.platform, obstacleT);
           for (const part of dp.parts) {
@@ -1506,7 +1648,7 @@ function NativeRenderer({
             part.obj.visible = solid;
           }
         }
-        for (const hv of hazardVisuals) {
+        for (const hv of chunkManager.allHazardVisuals()) {
           const pos = getHazardPosition(hv.hazard, obstacleT);
           hv.group.position.set(pos.x, pos.y, pos.z);
           hv.group.rotation.y += 0.05;
