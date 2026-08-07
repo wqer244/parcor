@@ -1,0 +1,8 @@
+name: Publish Update
+
+jobs:
+  update:
+    type: update
+    params:
+      channel: production
+      message: تحديث جديد
