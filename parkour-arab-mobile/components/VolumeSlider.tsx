@@ -97,14 +97,17 @@ export function VolumeSlider({ label, icon, value, onChange }: Props) {
   const fillStyle = useAnimatedStyle(() => ({
     width: `${fillPercent.value * 100}%`,
   }));
-  // Reads the shared value (not the plain `trackWidth` state) so the
-  // knob's position is always driven by the exact same width the
-  // gesture math above uses — one source of truth, no chance of the two
-  // ever disagreeing.
+  // Positioned with a PERCENTAGE (`left`), exactly like the fill bar
+  // above — not with pixels computed from a JS-measured trackWidth. A
+  // percentage is resolved by the native layout engine itself, so the
+  // knob always lands in the right spot the instant fillPercent changes,
+  // with zero dependency on onLayout having already fired with the
+  // correct number by that point. trackWidth is now only used for
+  // turning a touch's raw x position into a percentage during drag —
+  // it no longer has any say in where the knob is drawn.
   const knobStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: fillPercent.value * trackWidthShared.value - KNOB_SIZE / 2 },
-    ],
+    left: `${fillPercent.value * 100}%`,
+    transform: [{ translateX: -KNOB_SIZE / 2 }],
   }));
 
   return (
