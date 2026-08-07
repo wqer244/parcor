@@ -297,7 +297,11 @@ function getStandardMat(opts: {
 }
 
 // ── Platform meshes ────────────────────────────────────────
-function buildPlatformMeshes(scene: THREE.Scene) {
+// Returned so the caller can spin the Map 4 crystal decor every frame —
+// see `crystalSpinners` usage in the animate() loop below.
+interface PlatformMeshResult { crystalSpinners: THREE.Object3D[] }
+
+function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
   // Arena "armor panel" trim (bevel + 4 corner beacons per arena platform)
   // used to be one Mesh per piece — ~65 separate draw calls for just 13
   // platforms. Real engines handle repeated static props with GPU
@@ -310,6 +314,13 @@ function buildPlatformMeshes(scene: THREE.Scene) {
   const bevelTransforms: { x: number; y: number; z: number; sx: number; sz: number }[] = [];
   const beaconDummy = new THREE.Object3D();
   const beaconTransforms: { x: number; y: number; z: number; color: number }[] = [];
+
+  // Map 4 "Crystal Sanctuary" decor — a floating shard hovering above
+  // each platform plus a thin hover-ring beneath it, so the zone reads
+  // as hand-crafted floating islands rather than the same glowing cubes
+  // used everywhere else. Both are pushed into crystalSpinners so the
+  // animate() loop can give them a slow, ambient rotation.
+  const crystalSpinners: THREE.Object3D[] = [];
 
   for (const p of PLATFORMS) {
     const mat = getStandardMat({
@@ -342,6 +353,61 @@ function buildPlatformMeshes(scene: THREE.Scene) {
         pillar.position.set(p.x + px, p.y + 1.5, p.z);
         scene.add(pillar);
       }
+
+      // Map 4's finish gets a grander "victory portal" treatment: a big
+      // slowly-spinning ring standing on end behind the pillars, plus a
+      // crown of four small shards orbiting just above it — this is the
+      // course's actual ending now, so it earns a bigger flourish than
+      // the two mid-course gates.
+      if (p.theme === 'crystal') {
+        const portalMat = getStandardMat({ color: 0xffd700, emissive: 0xffd700, emissiveIntensity: 1.8 });
+        const portal = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.09, 12, 40), portalMat);
+        portal.position.set(p.x, p.y + 3.1, p.z - 0.4);
+        scene.add(portal);
+        crystalSpinners.push(portal);
+
+        const crownGeo = new THREE.OctahedronGeometry(0.22, 0);
+        const crownMat = getStandardMat({ color: 0xc23bff, emissive: 0xc23bff, emissiveIntensity: 1.6 });
+        for (let i = 0; i < 4; i++) {
+          const angle = (i / 4) * Math.PI * 2;
+          const shard = new THREE.Mesh(crownGeo, crownMat);
+          shard.userData.orbitRadius = 2.6;
+          shard.userData.orbitAngle = angle;
+          shard.userData.orbitCenter = { x: p.x, y: p.y + 3.1, z: p.z - 0.4 };
+          shard.position.set(p.x + Math.cos(angle) * 2.6, p.y + 3.1, p.z - 0.4 + Math.sin(angle) * 2.6);
+          scene.add(shard);
+          crystalSpinners.push(shard);
+        }
+      }
+    }
+
+    // Map 4 "Crystal Sanctuary" platforms: a small floating shard above
+    // (an anchor point the eye reads as "this island is magical", not
+    // just lit) and a thin hover-ring beneath (sells the "floating"
+    // illusion the way a drop-shadow can't at this scale). Both are
+    // cosmetic only — collision still uses the plain box above, so this
+    // never risks a mismatch between what you see and where you can
+    // stand.
+    if (p.theme === 'crystal' && p.type !== 'finish') {
+      const shardSize = Math.max(0.16, Math.min(p.width, p.depth) * 0.28);
+      const shardGeo = new THREE.OctahedronGeometry(shardSize, 0);
+      const shardMat = getStandardMat({
+        color: cssHex(p.glowColor), emissive: cssHex(p.glowColor),
+        emissiveIntensity: 1.5, metalness: 0.2, roughness: 0.1,
+      });
+      const shard = new THREE.Mesh(shardGeo, shardMat);
+      shard.position.set(p.x, p.y + 0.75 + shardSize, p.z);
+      scene.add(shard);
+      crystalSpinners.push(shard);
+
+      const hoverRadius = Math.max(p.width, p.depth) * 0.46;
+      const ringGeo = new THREE.TorusGeometry(hoverRadius, 0.03, 6, 24);
+      const ringMat = getStandardMat({ color: cssHex(p.glowColor), emissive: cssHex(p.glowColor), emissiveIntensity: 1.1 });
+      const hoverRing = new THREE.Mesh(ringGeo, ringMat);
+      hoverRing.rotation.x = Math.PI / 2;
+      hoverRing.position.set(p.x, p.y - p.height - 0.3, p.z);
+      scene.add(hoverRing);
+      crystalSpinners.push(hoverRing);
     }
 
     // Arena structures (decks, hub, cover, steps) get armor-panel trim —
@@ -408,6 +474,8 @@ function buildPlatformMeshes(scene: THREE.Scene) {
       scene.add(beaconMesh);
     }
   }
+
+  return { crystalSpinners };
 }
 
 // ── Arena decor — pillars, perimeter walls, entrance gate, floor grid ──
@@ -868,9 +936,22 @@ function NativeRenderer({
       scene.add(back);
 
       // World
-      buildPlatformMeshes(scene);
+      const { crystalSpinners } = buildPlatformMeshes(scene);
       buildArenaDecor(scene);
       buildStarfield(scene);
+
+      // Map 4 "Crystal Sanctuary" atmosphere — as the player approaches
+      // and enters the zone (around map3-gate, z ≈ -338), the fog and
+      // clear color drift from the course's usual near-black toward a
+      // violet tint, so the new area announces itself with lighting
+      // instead of only new geometry. Reused Color objects (no per-frame
+      // allocation) per this file's existing "never allocate in the hot
+      // path" convention — see muzzleScratch etc. below.
+      const FOG_DEFAULT = new THREE.Color(0x06060f);
+      const FOG_CRYSTAL = new THREE.Color(0x170a28);
+      const fogScratch = new THREE.Color();
+      const MAP4_TINT_START_Z = -300; // begins drifting well before map3-gate (-337.93)
+      const MAP4_TINT_END_Z = -345;   // fully tinted by m4-start
 
       // Ground plane
       const ground = new THREE.Mesh(
@@ -1310,6 +1391,32 @@ function NativeRenderer({
         const mode = cameraModeRef.current;
         playerRig.group.visible = mode !== 'first';
         playerShadow.visible = mode !== 'first';
+
+        // Crystal Sanctuary atmosphere — lerp fog/clear color by how far
+        // into Map 4's approach the player currently is.
+        const tintT = THREE.MathUtils.clamp(
+          (MAP4_TINT_START_Z - s.z) / (MAP4_TINT_START_Z - MAP4_TINT_END_Z), 0, 1,
+        );
+        fogScratch.copy(FOG_DEFAULT).lerp(FOG_CRYSTAL, tintT);
+        (scene.fog as THREE.FogExp2).color.copy(fogScratch);
+        renderer.setClearColor(fogScratch);
+
+        // Map 4 crystal decor — slow ambient spin on every shard/ring,
+        // plus the finish portal's orbiting crown shards.
+        for (const obj of crystalSpinners) {
+          obj.rotation.y += 0.012;
+          obj.rotation.x += 0.006;
+          const orbit = obj.userData.orbitCenter as { x: number; y: number; z: number } | undefined;
+          if (orbit) {
+            obj.userData.orbitAngle += 0.01;
+            const a = obj.userData.orbitAngle as number;
+            obj.position.set(
+              orbit.x + Math.cos(a) * obj.userData.orbitRadius,
+              orbit.y + Math.sin(now / 700) * 0.15,
+              orbit.z + Math.sin(a) * obj.userData.orbitRadius,
+            );
+          }
+        }
 
         const moving = Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01;
         if (moving) legPhase += 0.18; else idlePhase += 0.045;
