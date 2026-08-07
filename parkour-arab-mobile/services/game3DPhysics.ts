@@ -133,6 +133,71 @@ export interface Platform3D {
   // 1-3 — this is what makes Map 4 read as a different place rather
   // than "the same cubes, but smaller."
   theme?: 'crystal';
+  // ── Real obstacles (not just smaller islands) ─────────────────────
+  // `move`: the platform physically travels back and forth along one
+  // axis, following a sine wave — position(t) = base ± range at `speed`
+  // radians/sec, optionally phase-shifted so neighbouring movers don't
+  // sync up. A player standing on a moving platform is carried with it
+  // (see the `standingPlatformId` carry logic in stepPhysics3D below),
+  // so timing the jump onto AND off of it is the actual obstacle.
+  move?: { axis: 'x' | 'y' | 'z'; range: number; speed: number; phase?: number };
+  // `blink`: the platform periodically stops being solid — visible the
+  // whole time (so you can read the timing), but only collidable for
+  // `onRatio` of every `period` seconds. Landing on it mid-vanish just
+  // means you fall through, exactly like missing a jump.
+  blink?: { period: number; onRatio: number; phase?: number };
+}
+
+// Shared by Platform3D.move and Hazard3D.move — a simple sine-wave
+// oscillation around a fixed anchor point.
+export interface MoveDef { axis: 'x' | 'y' | 'z'; range: number; speed: number; phase?: number }
+
+// Evaluates a moving anchor's world position at time `t` (seconds). For
+// anchors with no `move` def this is just the static point — cheap
+// enough to call unconditionally for every platform/hazard every frame.
+export function applyMove(
+  anchor: { x: number; y: number; z: number },
+  move: MoveDef | undefined,
+  t: number,
+): { x: number; y: number; z: number } {
+  if (!move) return anchor;
+  const offset = Math.sin(t * move.speed + (move.phase ?? 0)) * move.range;
+  return {
+    x: anchor.x + (move.axis === 'x' ? offset : 0),
+    y: anchor.y + (move.axis === 'y' ? offset : 0),
+    z: anchor.z + (move.axis === 'z' ? offset : 0),
+  };
+}
+
+// A platform's live world position at time `t` — static platforms just
+// return their fixed x/y/z.
+export function getPlatformPosition(p: Platform3D, t: number): { x: number; y: number; z: number } {
+  return applyMove(p, p.move, t);
+}
+
+// Whether a blinking platform is currently solid. Non-blinking platforms
+// are always solid.
+export function isPlatformSolid(p: Platform3D, t: number): boolean {
+  if (!p.blink) return true;
+  const cyclePos = (((t * 1) + (p.blink.phase ?? 0)) % p.blink.period + p.blink.period) % p.blink.period;
+  return cyclePos < p.blink.period * p.blink.onRatio;
+}
+
+// ── Map 4 hazards — floating crystal spikes ─────────────────────────
+// Unlike platforms, these are never safe to touch: brushing one respawns
+// the player at their current checkpoint exactly like falling off the
+// course. Most hazards patrol the gap between platforms (via `move`),
+// so avoiding them is a real timing/positioning obstacle, not just a
+// bigger jump.
+export interface Hazard3D {
+  id: string;
+  x: number; y: number; z: number; // center, at rest
+  radius: number; // rough collision radius (sphere-ish, cheap to test)
+  move?: MoveDef;
+}
+
+export function getHazardPosition(h: Hazard3D, t: number): { x: number; y: number; z: number } {
+  return applyMove(h, h.move, t);
 }
 
 export interface PhysState3D {
@@ -151,6 +216,16 @@ export interface PhysState3D {
   // back to Map 1. Monotonically increases (never decreases, even if the
   // player walks backward past an already-cleared gate).
   checkpointIndex: number;
+  // Which platform (by id) the player is currently standing on, and the
+  // physics-time `t` (seconds) of the step that set it — together these
+  // let stepPhysics3D "carry" the player along with a moving platform
+  // (m4-move* in PLATFORMS) by comparing that platform's position at the
+  // previous step's t vs the current one. Both optional/undefined for
+  // players not standing on anything, or for callers that never pass a
+  // custom `t` into stepPhysics3D — everything degrades gracefully to
+  // the old static-platform behavior in that case.
+  standingPlatformId?: string;
+  platformT?: number;
 }
 
 export interface Input3D {
@@ -322,15 +397,66 @@ export const PLATFORMS: Platform3D[] = [
   { id:'m4-p11', x:2.6,  y:43.8, z:-433.4, width:1.3, height:0.4, depth:1.3, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
   { id:'m4-p12', x:-2.0, y:45.4, z:-440.2, width:1.3, height:0.4, depth:1.3, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
   { id:'m4-p13', x:2.4,  y:44.3, z:-447.0, width:1.2, height:0.4, depth:1.2, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
-  { id:'m4-p14', x:-1.1, y:46.1, z:-454.3, width:1.6, height:0.4, depth:1.6, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+
+  // ══════════════════════════════════════════════════════════════
+  // MAP 4 EXTENSION — "ممر الأشباح" (The Wraith Passage). This is the
+  // part that makes Map 4 an actually different course instead of a
+  // short detour through slightly smaller crystal islands: real moving
+  // and vanishing obstacles, not just static footprints. Every jump
+  // still reuses the same validated dz/dy envelope as the rest of the
+  // file — what changed is that some of the landing spots now move
+  // (m4-move*, sine-wave platforms you have to time), some disappear on
+  // a cycle (m4-blink*, always visible so the timing is readable, but
+  // only solid part of the time), and there are floating crystal spike
+  // hazards (HAZARDS below) patrolling several of the gaps that respawn
+  // you on contact — a genuine "avoid this, don't just jump it" threat
+  // that doesn't exist anywhere earlier in the course.
+  // ══════════════════════════════════════════════════════════════
+
+  // Shifting Spires — two platforms that swing side-to-side; you have
+  // to lead your jump toward where the platform will be, not where it
+  // is right now.
+  { id:'m4-move1', x:-1.8, y:45.6, z:-453.8, width:1.5, height:0.4, depth:1.5,
+    color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal',
+    move:{ axis:'x', range:1.6, speed:1.6 } },
+  { id:'m4-move2', x:-1.7, y:48.3, z:-467.4, width:1.4, height:0.4, depth:1.4,
+    color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal',
+    move:{ axis:'x', range:1.7, speed:1.3, phase:2 } },
+
+  // Blinking Shards — solid most of the time (readable timing window),
+  // but land mid-vanish and you fall straight through.
+  { id:'m4-blink1', x:1.9, y:47.0, z:-460.6, width:1.6, height:0.4, depth:1.6,
+    color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal',
+    blink:{ period:2.2, onRatio:0.6 } },
+  { id:'m4-blink2', x:-1.8, y:48.6, z:-481.0, width:1.6, height:0.4, depth:1.6,
+    color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal',
+    blink:{ period:2.0, onRatio:0.55, phase:1 } },
+
+  { id:'m4-p16', x:1.6, y:50.0, z:-487.8, width:1.2, height:0.4, depth:1.2,
+    color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
+
+  // A platform that patrols depth instead of side-to-side — the gap
+  // ahead of it is sometimes short, sometimes long.
+  { id:'m4-move3', x:-1.4, y:51.3, z:-494.6, width:1.4, height:0.4, depth:1.4,
+    color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal',
+    move:{ axis:'z', range:1.2, speed:1.5 } },
+
+  // Twin crystal bridge #2 — a second long thin plank, echoing the
+  // Section-3 bridge but higher up and further from anything else.
+  { id:'m4-bridge3', x:0, y:52.6, z:-504.5, width:1.2, height:0.4, depth:5.0,
+    color:'#0d3040', glowColor:'#7ef9ff', type:'platform', theme:'crystal' },
+
+  { id:'m4-p18', x:0,    y:53.6, z:-511.5, width:2.0, height:0.4, depth:2.0, color:'#2a0040', glowColor:'#e08cff', type:'platform', theme:'crystal' }, // breather
+  { id:'m4-p19', x:2.2,  y:52.6, z:-518.3, width:1.3, height:0.4, depth:1.3, color:'#3d2a00', glowColor:'#ffd700', type:'platform', theme:'crystal' },
+  { id:'m4-p20', x:-2.0, y:54.0, z:-525.1, width:1.3, height:0.4, depth:1.3, color:'#241040', glowColor:'#c23bff', type:'platform', theme:'crystal' },
 
   // Finish — the ONLY win trigger in the whole course now. This jump
-  // (dz:8.9, dx:0, dy:+1.0) exactly mirrors the proven map-gate/finish
-  // jump shape reused throughout this file ("small platform → big
-  // landing pad", dx0), kept deliberately unchanged even here at the
-  // very last jump of the run so it stays inside the fully-validated
+  // (dz:8.9, dx:+0.9, dy:+1.0) reuses the exact proven map-gate/finish
+  // jump shape used throughout this file ("small platform → big
+  // landing pad"), kept deliberately unchanged even here at the very
+  // last jump of the run so it stays inside the fully-validated
   // envelope.
-  { id:'finish', x:-1.1, y:47.1, z:-463.2, width:6.5, height:0.6, depth:6.5,
+  { id:'finish', x:-1.1, y:55.0, z:-534.0, width:6.5, height:0.6, depth:6.5,
     color:'#5a4000', glowColor:'#ffd700', type:'finish', theme:'crystal' },
 
   // ── PvP Arena — "Crimson Coliseum" ──────────────────────
@@ -396,6 +522,31 @@ export const PLATFORMS: Platform3D[] = [
     color:'#2a1818', glowColor:'#ff3333', type:'platform', arena:true },
 ];
 
+// ── Map 4 hazards — "Wraith Passage" spike patrols ──────────────────
+// Floating crystal spikes seeded through the new Map 4 gauntlet (see
+// m4-move*/m4-blink* above). Each one respawns the player on contact —
+// exactly like falling off the course — so they're a genuine "avoid
+// this" threat, not just another platform. Most patrol on `move` so
+// standing still and waiting isn't a safe strategy either. See
+// buildHazardMeshes in GameRenderer3D.tsx for how these render (a
+// small spinning thorn-cluster with a danger-red glow).
+export const HAZARDS: Hazard3D[] = [
+  // Bobs vertically in the gap right after the first moving platform —
+  // times its low point to threaten the jump onto m4-blink1.
+  { id:'h1', x:0,    y:46.6, z:-457.2, radius:0.55, move:{ axis:'y', range:0.8, speed:2.0 } },
+  // Sweeps side-to-side across the middle of the passage, between the
+  // two blinking shards.
+  { id:'h2', x:0,    y:49.6, z:-470.8, radius:0.55, move:{ axis:'x', range:1.3, speed:1.8, phase:1.5 } },
+  // Sits beside m4-p16's approach — stationary, but placed to punish a
+  // sloppy line rather than a slow one.
+  { id:'h3', x:-0.6, y:49.4, z:-484.6, radius:0.5 },
+  // Vertical patrol guarding the entrance to bridge #2.
+  { id:'h4', x:0,    y:52.0, z:-498.0, radius:0.55, move:{ axis:'y', range:1.0, speed:2.2, phase:0.7 } },
+  // Slow horizontal sweep along bridge #2 itself — the bridge is long
+  // enough that standing still waiting it out isn't an option.
+  { id:'h5', x:0,    y:53.4, z:-504.5, radius:0.5, move:{ axis:'x', range:1.4, speed:1.1 } },
+];
+
 // ── PvP Arena — decorative structures (no collision) ────────
 // Pure set-dressing rendered once and never touched by physics: corner
 // towers, perimeter energy walls + light pillars, an entrance gate, and
@@ -453,7 +604,10 @@ export const PVP_BANNERS: ArenaBanner[] = [
 // Matches the finish platform's z (see 'finish' in PLATFORMS below) — now
 // at the end of Map 4, not Map 1, since finishing an earlier map no
 // longer ends the run. Used only for the progress-percentage HUD bar.
-export const FINISH_DISTANCE = 463.2;
+// Updated for the longer "Wraith Passage" Map 4 extension (moving +
+// blinking platforms and spike hazards) — the finish moved from
+// z:-463.2 to z:-534.0.
+export const FINISH_DISTANCE = 534.0;
 
 // Respawn points for the 4-map course — index i is where the player
 // reappears after falling anywhere in Map (i+1). stepPhysics3D advances
@@ -470,13 +624,38 @@ export const CHECKPOINTS: Checkpoint[] = [
 ];
 
 // ── Physics Step ───────────────────────────────────────────
+// `t` is the current time in seconds, used to evaluate moving/blinking
+// obstacles (m4-move*/m4-blink* in PLATFORMS, and HAZARDS). It's
+// optional and defaults to real time — existing callers that don't pass
+// it keep working exactly as before; nothing here changes unless the
+// map actually contains a `move`/`blink` platform or a hazard.
 export function stepPhysics3D(
   state: PhysState3D,
   input: Input3D,
+  t: number = Date.now() / 1000,
 ): PhysState3D {
   if (state.finished) return state;
 
   let { x, y, z, vx, vy, vz, onGround, facingAngle } = state;
+
+  // If the player was standing on a moving platform last step, carry
+  // them along with however far it travelled since then, before any of
+  // this step's own movement is applied. `platformT` is the `t` of the
+  // step that last set `standingPlatformId`, so the delta below is
+  // exactly this platform's motion over the elapsed time — clamped so a
+  // long gap between steps (e.g. a paused game) can't fling the player.
+  if (onGround && state.standingPlatformId) {
+    const standingOn = PLATFORMS.find(p => p.id === state.standingPlatformId);
+    if (standingOn && standingOn.move) {
+      const prevT = state.platformT ?? t;
+      const dt = Math.max(0, Math.min(0.25, t - prevT));
+      const prevPos = getPlatformPosition(standingOn, t - dt);
+      const currPos = getPlatformPosition(standingOn, t);
+      x += currPos.x - prevPos.x;
+      y += currPos.y - prevPos.y;
+      z += currPos.z - prevPos.z;
+    }
+  }
 
   // Horizontal intent — analog joystick vector (already rotated to world
   // space by the caller, camera-relative) takes priority when present;
@@ -547,27 +726,59 @@ export function stepPhysics3D(
     };
   }
 
-  // Platform collision (feet land on top)
-  for (const p of PLATFORMS) {
-    const halfW = p.width / 2 + PLAYER_RADIUS - 0.05;
-    const halfD = p.depth / 2 + PLAYER_RADIUS - 0.05;
-
-    if (
-      Math.abs(newX - p.x) < halfW &&
-      Math.abs(newZ - p.z) < halfD &&
-      vy <= 0 &&
-      y >= p.y - 0.12 &&
-      newY <= p.y
-    ) {
-      const finished = p.type === 'finish';
+  // Hazard collision — floating crystal spikes (Map 4's "Wraith
+  // Passage") are lethal on contact: touching one respawns the player
+  // exactly like falling off the course, even if they're still mid-air
+  // above a platform. Checked before platform collision since a hazard
+  // should kill even if you'd otherwise have landed safely.
+  for (const h of HAZARDS) {
+    const hp = getHazardPosition(h, t);
+    const dx = newX - hp.x;
+    const dy = newY + PLAYER_HEIGHT / 2 - hp.y;
+    const dz = newZ - hp.z;
+    const hitDist = h.radius + PLAYER_RADIUS;
+    if (dx * dx + dy * dy + dz * dz < hitDist * hitDist) {
+      const cp = CHECKPOINTS[checkpointIndex];
       return {
-        x: newX, y: p.y, z: newZ,
-        vx, vy: 0, vz,
-        onGround: true, facingAngle,
-        finished, checkpointIndex,
+        x: cp.x, y: cp.y, z: cp.z,
+        vx: 0, vy: 0, vz: 0, onGround: false, facingAngle: 0,
+        finished: false, checkpointIndex,
       };
     }
   }
 
-  return { x: newX, y: newY, z: newZ, vx, vy, vz, onGround: false, facingAngle, finished: false, checkpointIndex };
+  // Platform collision (feet land on top). Uses each platform's live
+  // position at time `t` (getPlatformPosition — a no-op for static
+  // platforms) so moving platforms are collided against where they
+  // actually are right now, not their resting x/y/z. Blinking platforms
+  // that are currently "off" (isPlatformSolid) are skipped entirely, so
+  // landing on one mid-vanish just falls through like a missed jump.
+  for (const p of PLATFORMS) {
+    if (!isPlatformSolid(p, t)) continue;
+    const pos = getPlatformPosition(p, t);
+    const halfW = p.width / 2 + PLAYER_RADIUS - 0.05;
+    const halfD = p.depth / 2 + PLAYER_RADIUS - 0.05;
+
+    if (
+      Math.abs(newX - pos.x) < halfW &&
+      Math.abs(newZ - pos.z) < halfD &&
+      vy <= 0 &&
+      y >= pos.y - 0.12 &&
+      newY <= pos.y
+    ) {
+      const finished = p.type === 'finish';
+      return {
+        x: newX, y: pos.y, z: newZ,
+        vx, vy: 0, vz,
+        onGround: true, facingAngle,
+        finished, checkpointIndex,
+        standingPlatformId: p.id, platformT: t,
+      };
+    }
+  }
+
+  return {
+    x: newX, y: newY, z: newZ, vx, vy, vz, onGround: false, facingAngle,
+    finished: false, checkpointIndex, standingPlatformId: undefined, platformT: t,
+  };
 }
