@@ -51,11 +51,18 @@
           }
         }
       ],
-      "./plugins/withAbiFilters.js"
+      "./plugins/withAbiFilters.js",
+      "expo-updates"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/6dabf1ca-fe40-4fe1-99fb-214096a6349d"
     },
     "extra": {
       "eas": {
