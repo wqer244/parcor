@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import {
   PLATFORMS, PhysState3D, WeaponType, WEAPON_DEFS, PVP_WEAPON_SPAWNS, WEAPON_RESPAWN_MS,
   PVP_PILLARS, PVP_WALL_SEGMENTS, PVP_BANNERS, TIER_COLORS,
+  HAZARDS, getPlatformPosition, getHazardPosition, isPlatformSolid, Platform3D, Hazard3D,
 } from '@/services/game3DPhysics';
 import { Skin, getSkin, DEFAULT_SKIN_ID, CHARACTER_MODEL } from '@/constants/skins';
 import { Asset } from 'expo-asset';
@@ -299,7 +300,17 @@ function getStandardMat(opts: {
 // ── Platform meshes ────────────────────────────────────────
 // Returned so the caller can spin the Map 4 crystal decor every frame —
 // see `crystalSpinners` usage in the animate() loop below.
-interface PlatformMeshResult { crystalSpinners: THREE.Object3D[] }
+//
+// `dynamicPlatforms` covers Map 4's new moving/blinking obstacles
+// (m4-move*/m4-blink* in PLATFORMS): every visual piece built for a
+// given platform (box, glow strip, and — for crystal-themed ones — the
+// floating shard + hover ring) is recorded with its fixed offset from
+// that platform's anchor point, so the animate() loop can reposition
+// (and, for blinkers, show/hide) the whole set each frame just by
+// re-evaluating the platform's live position/solidity.
+interface DynamicPlatformPart { obj: THREE.Object3D; offsetX: number; offsetY: number; offsetZ: number }
+interface DynamicPlatform { platform: Platform3D; parts: DynamicPlatformPart[] }
+interface PlatformMeshResult { crystalSpinners: THREE.Object3D[]; dynamicPlatforms: DynamicPlatform[] }
 
 function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
   // Arena "armor panel" trim (bevel + 4 corner beacons per arena platform)
@@ -321,8 +332,16 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
   // used everywhere else. Both are pushed into crystalSpinners so the
   // animate() loop can give them a slow, ambient rotation.
   const crystalSpinners: THREE.Object3D[] = [];
+  // Obstacle platforms (move and/or blink) — see DynamicPlatform above.
+  const dynamicPlatforms: DynamicPlatform[] = [];
 
   for (const p of PLATFORMS) {
+    // Accumulates every visual piece built for THIS platform, in case it
+    // turns out to be a moving/blinking one (checked at the bottom of
+    // the loop body, once shard/hoverRing have also had a chance to add
+    // themselves in).
+    const dynParts: DynamicPlatformPart[] = [];
+
     const mat = getStandardMat({
       color: cssHex(p.color),
       emissive: cssHex(p.glowColor),
@@ -333,6 +352,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(p.width, p.height, p.depth), mat);
     mesh.position.set(p.x, p.y - p.height / 2, p.z);
     scene.add(mesh);
+    dynParts.push({ obj: mesh, offsetX: 0, offsetY: -p.height / 2, offsetZ: 0 });
 
     // Top glow strip
     const stripMat = getStandardMat({
@@ -343,6 +363,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     const strip = new THREE.Mesh(new THREE.BoxGeometry(p.width + 0.06, 0.035, p.depth + 0.06), stripMat);
     strip.position.set(p.x, p.y + 0.01, p.z);
     scene.add(strip);
+    dynParts.push({ obj: strip, offsetX: 0, offsetY: 0.01, offsetZ: 0 });
 
     // Finish pillars
     if (p.type === 'finish') {
@@ -399,6 +420,7 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       shard.position.set(p.x, p.y + 0.75 + shardSize, p.z);
       scene.add(shard);
       crystalSpinners.push(shard);
+      dynParts.push({ obj: shard, offsetX: 0, offsetY: 0.75 + shardSize, offsetZ: 0 });
 
       const hoverRadius = Math.max(p.width, p.depth) * 0.46;
       const ringGeo = new THREE.TorusGeometry(hoverRadius, 0.03, 6, 24);
@@ -408,6 +430,14 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
       hoverRing.position.set(p.x, p.y - p.height - 0.3, p.z);
       scene.add(hoverRing);
       crystalSpinners.push(hoverRing);
+      dynParts.push({ obj: hoverRing, offsetX: 0, offsetY: -p.height - 0.3, offsetZ: 0 });
+    }
+
+    // Register as a dynamic obstacle if it moves and/or blinks — done
+    // last so every visual piece above (box, strip, shard, ring) is
+    // already in dynParts.
+    if (p.move || p.blink) {
+      dynamicPlatforms.push({ platform: p, parts: dynParts });
     }
 
     // Arena structures (decks, hub, cover, steps) get armor-panel trim —
@@ -475,7 +505,51 @@ function buildPlatformMeshes(scene: THREE.Scene): PlatformMeshResult {
     }
   }
 
-  return { crystalSpinners };
+  return { crystalSpinners, dynamicPlatforms };
+}
+
+// ── Hazard meshes ──────────────────────────────────────────
+// Map 4's spike hazards (HAZARDS in game3DPhysics.ts): a small cluster
+// of thorn-like cones around a glowing core, danger-red so it reads as
+// "don't touch" at a glance rather than blending in with the amethyst/
+// gold crystal platforms. Returned as one Group per hazard, positioned
+// every frame in the animate() loop (getHazardPosition handles the ones
+// that patrol via `move`; static ones just sit at rest).
+interface HazardVisual { hazard: Hazard3D; group: THREE.Group }
+
+function buildHazardMeshes(scene: THREE.Scene): { hazardVisuals: HazardVisual[] } {
+  const hazardVisuals: HazardVisual[] = [];
+  const coreMat = getStandardMat({ color: 0xff2a4a, emissive: 0xff2a4a, emissiveIntensity: 2.2, metalness: 0.3, roughness: 0.15 });
+  const spikeMat = getStandardMat({ color: 0x8a0018, emissive: 0xff2a4a, emissiveIntensity: 1.4, metalness: 0.4, roughness: 0.2 });
+
+  for (const h of HAZARDS) {
+    const group = new THREE.Group();
+    group.position.set(h.x, h.y, h.z);
+
+    const core = new THREE.Mesh(new THREE.OctahedronGeometry(h.radius * 0.5, 0), coreMat);
+    group.add(core);
+
+    const spikeGeo = new THREE.ConeGeometry(h.radius * 0.28, h.radius * 1.4, 6);
+    const spikeCount = 5;
+    for (let i = 0; i < spikeCount; i++) {
+      const angle = (i / spikeCount) * Math.PI * 2;
+      const spike = new THREE.Mesh(spikeGeo, spikeMat);
+      spike.position.set(Math.cos(angle) * h.radius * 0.55, Math.sin(angle * 1.7) * h.radius * 0.3, Math.sin(angle) * h.radius * 0.55);
+      spike.lookAt(group.position.clone().add(new THREE.Vector3(Math.cos(angle), Math.sin(angle * 1.7), Math.sin(angle)).multiplyScalar(2)));
+      spike.rotation.x += Math.PI / 2;
+      group.add(spike);
+    }
+
+    // A faint danger-glow point light makes the hazard read from a
+    // distance even before its geometry is clearly visible.
+    const glow = new THREE.PointLight(0xff2a4a, 0.9, 8);
+    group.add(glow);
+
+    scene.add(group);
+    hazardVisuals.push({ hazard: h, group });
+  }
+
+  return { hazardVisuals };
 }
 
 // ── Arena decor — pillars, perimeter walls, entrance gate, floor grid ──
@@ -936,7 +1010,8 @@ function NativeRenderer({
       scene.add(back);
 
       // World
-      const { crystalSpinners } = buildPlatformMeshes(scene);
+      const { crystalSpinners, dynamicPlatforms } = buildPlatformMeshes(scene);
+      const { hazardVisuals } = buildHazardMeshes(scene);
       buildArenaDecor(scene);
       buildStarfield(scene);
 
@@ -1416,6 +1491,25 @@ function NativeRenderer({
               orbit.z + Math.sin(a) * obj.userData.orbitRadius,
             );
           }
+        }
+
+        // Map 4 obstacles — moving/blinking platforms and spike hazards.
+        // Uses the same `now/1000` time basis as stepPhysics3D's default
+        // `t` (both read Date.now()), so what's rendered here always
+        // matches what the physics step just collided against.
+        const obstacleT = now / 1000;
+        for (const dp of dynamicPlatforms) {
+          const pos = getPlatformPosition(dp.platform, obstacleT);
+          const solid = isPlatformSolid(dp.platform, obstacleT);
+          for (const part of dp.parts) {
+            part.obj.position.set(pos.x + part.offsetX, pos.y + part.offsetY, pos.z + part.offsetZ);
+            part.obj.visible = solid;
+          }
+        }
+        for (const hv of hazardVisuals) {
+          const pos = getHazardPosition(hv.hazard, obstacleT);
+          hv.group.position.set(pos.x, pos.y, pos.z);
+          hv.group.rotation.y += 0.05;
         }
 
         const moving = Math.abs(s.vx) > 0.01 || Math.abs(s.vz) > 0.01;
