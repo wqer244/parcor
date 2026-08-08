@@ -576,6 +576,10 @@ function buildHazardMeshes(scene: THREE.Scene, hazards: Hazard3D[]): { hazardVis
 // at once. This does the same thing here, bucketed by Z-distance along
 // the course.
 const CHUNK_SIZE = 45; // world units of Z per chunk — a handful of platforms each
+// A little before the arena walkway (z:16) so approaching it doesn't
+// cause a visible pop-in right at the gate; still well above the course
+// spawn (z:0), so Maps 1-4 never trigger it.
+const ARENA_LOAD_Z = 8;
 // "Ahead" = toward the finish (decreasing Z); "behind" = toward the
 // start/arena (increasing Z). Bumped BEHIND up to 2 (from 1) so walking
 // backward doesn't out-run the loaded window either — see the backward-
@@ -600,7 +604,16 @@ function groupByChunk<T extends { z: number }>(items: T[]): Map<number, T[]> {
   }
   return map;
 }
-const PLATFORMS_BY_CHUNK = groupByChunk(PLATFORMS);
+// The PvP arena (z:16..~90, see PVP_ARENA_BOUNDS) is a separate branch
+// off the course, not something you pass through while running Maps
+// 1-4 — but naive Z-based chunking would still sweep its platforms in
+// alongside Map 1/2's chunks, since the arena's z-range starts right
+// next to the course's own z:0 spawn. Pulled out of the normal chunk
+// grouping entirely; handled by its own load-once trigger below
+// (ChunkManager.loadArena) instead.
+const COURSE_PLATFORMS = PLATFORMS.filter(p => !p.arena);
+const ARENA_PLATFORMS = PLATFORMS.filter(p => p.arena);
+const PLATFORMS_BY_CHUNK = groupByChunk(COURSE_PLATFORMS);
 const HAZARDS_BY_CHUNK = groupByChunk(HAZARDS);
 
 // Recursively frees GPU geometry buffers for an object and its children.
@@ -642,9 +655,33 @@ class ChunkManager {
   private scene: THREE.Scene;
   private loaded = new Map<number, LoadedChunk>();
   private lastChunk: number | null = null;
+  private arenaLoaded = false;
+  private arenaDynamic: { crystalSpinners: THREE.Object3D[]; dynamicPlatforms: DynamicPlatform[] } = {
+    crystalSpinners: [], dynamicPlatforms: [],
+  };
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+  }
+
+  // The PvP arena is loaded once, the first time the player actually
+  // walks toward it (past ARENA_LOAD_Z, a little before the walkway at
+  // z:16 so there's no pop-in right at the gate) — never eagerly at
+  // scene mount. It's never unloaded again afterward: unlike the course
+  // chunks, it's a single bounded, out-of-the-way zone, so the only
+  // goal here is avoiding paying for it while the player is nowhere
+  // near it (i.e. the whole time they're playing Maps 1-4).
+  private loadArena() {
+    if (this.arenaLoaded) return;
+    this.arenaLoaded = true;
+    try {
+      const platResult = buildPlatformMeshes(this.scene, ARENA_PLATFORMS);
+      this.arenaDynamic.crystalSpinners.push(...platResult.crystalSpinners);
+      this.arenaDynamic.dynamicPlatforms.push(...platResult.dynamicPlatforms);
+      buildArenaDecor(this.scene);
+    } catch (err) {
+      console.error('[ChunkManager] failed to load arena:', err);
+    }
   }
 
   private loadChunk(idx: number) {
@@ -696,6 +733,11 @@ class ChunkManager {
   // this file had that backwards, which starved the buffer in the
   // direction the player is actually normally travelling.
   ensureAround(z: number) {
+    // Checked every call (not gated behind the chunk-change early return
+    // below) since the arena threshold sits well inside a single chunk —
+    // the player can cross z:8 without their chunk index ever changing.
+    if (!this.arenaLoaded && z > ARENA_LOAD_Z) this.loadArena();
+
     const current = chunkIndexForZ(z);
     if (current === this.lastChunk) return;
     this.lastChunk = current;
@@ -720,9 +762,11 @@ class ChunkManager {
   // course.
   *allCrystalSpinners(): IterableIterator<THREE.Object3D> {
     for (const chunk of this.loaded.values()) yield* chunk.crystalSpinners;
+    yield* this.arenaDynamic.crystalSpinners;
   }
   *allDynamicPlatforms(): IterableIterator<DynamicPlatform> {
     for (const chunk of this.loaded.values()) yield* chunk.dynamicPlatforms;
+    yield* this.arenaDynamic.dynamicPlatforms;
   }
   *allHazardVisuals(): IterableIterator<HazardVisual> {
     for (const chunk of this.loaded.values()) yield* chunk.hazardVisuals;
@@ -1190,10 +1234,14 @@ function NativeRenderer({
       // ChunkManager above) rather than built all at once; only the
       // chunks around the player's starting position load here, and
       // ensureAround() keeps that window moving with them every frame
-      // down in animate().
+      // down in animate(). The PvP arena (buildArenaDecor + its
+      // platforms) is intentionally NOT built here — it used to load
+      // unconditionally at mount, which meant it sat in the scene the
+      // entire time the player was on Maps 1/2 near spawn, right next
+      // to it spatially. ChunkManager now defers it until the player
+      // actually approaches (see ARENA_LOAD_Z / loadArena above).
       const chunkManager = new ChunkManager(scene);
       chunkManager.ensureAround(physStateRef.current.z);
-      buildArenaDecor(scene);
       buildStarfield(scene);
 
       // Map 4 "Crystal Sanctuary" atmosphere — as the player approaches
