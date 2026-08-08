@@ -97,6 +97,27 @@ export default function GameScreen() {
     };
   }, []);
 
+  // Scene-ready gate — GameRenderer3D does a bunch of one-time setup the
+  // instant it mounts (asset loads + a shader/geometry warm-up pass, see
+  // that component for why), and this screen previously had NO loading
+  // state at all: the physics loop below and the touch controls were
+  // already live while that setup was still running, so any hitch it
+  // caused was fully visible to the player right as Map 1 started —
+  // which is exactly the "heavy lag at the start of a run" symptom.
+  // `sceneReady` stays false until GameRenderer3D's very first frame is
+  // about to render, and a loading overlay (below, in the JSX) covers
+  // the screen until then, so that one-time cost is hidden instead of
+  // felt as gameplay lag. The 6s fallback timer is just a safety net —
+  // if the ready signal is ever missed for any reason, the player still
+  // isn't stuck staring at a loading screen forever.
+  const [sceneReady, setSceneReady] = useState(false);
+  const onReadyRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    onReadyRef.current = () => setSceneReady(true);
+    const fallback = setTimeout(() => setSceneReady(true), 6000);
+    return () => clearTimeout(fallback);
+  }, []);
+
   // Screen-space feedback — a quick red pulse when hit, a white pulse on
   // respawn. Driven by Animated directly (not React state) so it's a real
   // smooth fade regardless of the HUD's own re-render cadence.
@@ -399,7 +420,22 @@ export default function GameScreen() {
         isAimingRef={isAimingRef}
         aimTargetIdRef={aimTargetIdRef}
         onFireRef={onFireRef}
+        onReadyRef={onReadyRef}
       />
+
+      {/* ── Loading overlay ──────────────────────────────
+          Covers the screen until GameRenderer3D signals it's actually
+          ready to render (see the sceneReady comment above) — hides the
+          one-time scene-setup cost instead of it showing up as lag the
+          moment Map 1 starts. pointerEvents="none" isn't used here on
+          purpose: this should actively block early taps on the joystick/
+          buttons while the scene is still warming up, not let them queue
+          up underneath it. */}
+      {!sceneReady && (
+        <View style={styles.loadingOverlay}>
+          <Text style={styles.loadingText}>...جاري التحميل</Text>
+        </View>
+      )}
 
       {/* ── Damage / respawn screen flashes ─────────────
           Sit above the 3D view, below every touch layer (pointerEvents
@@ -723,6 +759,18 @@ const styles = StyleSheet.create({
   },
   screenFlash: {
     ...StyleSheet.absoluteFillObject,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#06060f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 50,
+  },
+  loadingText: {
+    color: '#00ffcc',
+    fontSize: 16,
+    fontWeight: '700',
   },
   hud: {
     position: 'absolute',
