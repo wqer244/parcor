@@ -548,10 +548,14 @@ function buildHazardMeshes(scene: THREE.Scene, hazards: Hazard3D[]): { hazardVis
       group.add(spike);
     }
 
-    // A faint danger-glow point light makes the hazard read from a
-    // distance even before its geometry is clearly visible.
-    const glow = new THREE.PointLight(0xff2a4a, 0.9, 8);
-    group.add(glow);
+    // No dynamic PointLight here on purpose: every extra light in a
+    // three.js scene adds a shading term for EVERY MeshStandardMaterial
+    // fragment rendered anywhere, not just objects near that light — 5
+    // of them stacked on top of the game's existing key/fill/back lights
+    // would tax the whole scene's frame time the moment this chunk
+    // loads, not just the hazard's immediate surroundings. The emissive
+    // core + spike materials already glow brightly enough on their own
+    // to read as "danger" from a distance without paying that cost.
 
     scene.add(group);
     objects.push(group);
@@ -572,8 +576,12 @@ function buildHazardMeshes(scene: THREE.Scene, hazards: Hazard3D[]): { hazardVis
 // at once. This does the same thing here, bucketed by Z-distance along
 // the course.
 const CHUNK_SIZE = 45; // world units of Z per chunk — a handful of platforms each
-const CHUNK_LOAD_AHEAD = 2; // chunks to keep loaded ahead of the player
-const CHUNK_LOAD_BEHIND = 1; // chunks to keep loaded behind (backtracking, respawn safety)
+// "Ahead" = toward the finish (decreasing Z); "behind" = toward the
+// start/arena (increasing Z). Bumped BEHIND up to 2 (from 1) so walking
+// backward doesn't out-run the loaded window either — see the backward-
+// walking question this was written to answer.
+const CHUNK_LOAD_AHEAD = 2; // chunks to keep loaded toward the finish
+const CHUNK_LOAD_BEHIND = 2; // chunks to keep loaded back toward the start
 
 function chunkIndexForZ(z: number): number {
   return Math.floor(z / CHUNK_SIZE);
@@ -613,12 +621,23 @@ interface LoadedChunk {
   objects: THREE.Object3D[]; // everything to remove + dispose on unload
 }
 
+// Extra chunks of slack kept loaded beyond the "need" window before
+// something actually gets unloaded (see ensureAround). Without this, a
+// player standing right on a chunk boundary — which can genuinely
+// happen, e.g. a moving platform (m4-move3) straddles one — would flip
+// `current` back and forth every time it wobbles across the line, and
+// each flip would tear down and immediately rebuild the same meshes.
+// That thrashing (not the streaming itself) is what causes a hard
+// freeze; this buffer means a single-chunk wobble across one boundary
+// never crosses into unload territory.
+const CHUNK_KEEP_BUFFER = 1;
+
 // Owns which chunks currently have meshes in the scene, and keeps that
 // set in sync with the player's position. `ensureAround(z)` is meant to
 // be called every frame with the player's current Z — it's cheap
 // (a couple of integer comparisons) when nothing needs to change, and
 // only does real work (building/tearing down meshes) right when the
-// player crosses a chunk boundary.
+// player crosses a chunk boundary AND lands outside the keep buffer.
 class ChunkManager {
   private scene: THREE.Scene;
   private loaded = new Map<number, LoadedChunk>();
@@ -630,41 +649,69 @@ class ChunkManager {
 
   private loadChunk(idx: number) {
     if (this.loaded.has(idx)) return;
-    const platforms = PLATFORMS_BY_CHUNK.get(idx) ?? [];
-    const hazards = HAZARDS_BY_CHUNK.get(idx) ?? [];
-    const platResult = buildPlatformMeshes(this.scene, platforms);
-    const hazResult = buildHazardMeshes(this.scene, hazards);
-    this.loaded.set(idx, {
-      crystalSpinners: platResult.crystalSpinners,
-      dynamicPlatforms: platResult.dynamicPlatforms,
-      hazardVisuals: hazResult.hazardVisuals,
-      objects: [...platResult.objects, ...hazResult.objects],
-    });
+    try {
+      const platforms = PLATFORMS_BY_CHUNK.get(idx) ?? [];
+      const hazards = HAZARDS_BY_CHUNK.get(idx) ?? [];
+      const platResult = buildPlatformMeshes(this.scene, platforms);
+      const hazResult = buildHazardMeshes(this.scene, hazards);
+      this.loaded.set(idx, {
+        crystalSpinners: platResult.crystalSpinners,
+        dynamicPlatforms: platResult.dynamicPlatforms,
+        hazardVisuals: hazResult.hazardVisuals,
+        objects: [...platResult.objects, ...hazResult.objects],
+      });
+    } catch (err) {
+      // A build failure here must never take the whole render loop down
+      // with it — an uncaught throw inside animate() silently stops
+      // requestAnimationFrame from ever rescheduling, which looks
+      // exactly like a full freeze. Log and skip this chunk instead;
+      // the player just won't see that piece of the level rather than
+      // losing the whole game.
+      console.error(`[ChunkManager] failed to load chunk ${idx}:`, err);
+    }
   }
 
   private unloadChunk(idx: number) {
     const chunk = this.loaded.get(idx);
     if (!chunk) return;
-    for (const obj of chunk.objects) {
-      this.scene.remove(obj);
-      disposeObjectGeometry(obj);
+    try {
+      for (const obj of chunk.objects) {
+        this.scene.remove(obj);
+        disposeObjectGeometry(obj);
+      }
+    } catch (err) {
+      console.error(`[ChunkManager] failed to unload chunk ${idx}:`, err);
     }
     this.loaded.delete(idx);
   }
 
   // Call every frame with the player's current world Z. No-ops unless
   // the player has moved into a new chunk since the last call.
+  //
+  // The course runs along -Z (start at 0, finish at -534), so a LOWER
+  // chunk index is further along toward the finish ("ahead") and a
+  // HIGHER index is back toward the start/arena ("behind"). This must
+  // stay the way it's written below — CHUNK_LOAD_AHEAD subtracts from
+  // `current`, CHUNK_LOAD_BEHIND adds to it — an earlier version of
+  // this file had that backwards, which starved the buffer in the
+  // direction the player is actually normally travelling.
   ensureAround(z: number) {
     const current = chunkIndexForZ(z);
     if (current === this.lastChunk) return;
     this.lastChunk = current;
 
     const need = new Set<number>();
-    for (let i = current - CHUNK_LOAD_BEHIND; i <= current + CHUNK_LOAD_AHEAD; i++) need.add(i);
-
+    for (let i = current - CHUNK_LOAD_AHEAD; i <= current + CHUNK_LOAD_BEHIND; i++) need.add(i);
     for (const idx of need) this.loadChunk(idx);
+
+    // Hysteresis: only unload chunks that fall outside the need window
+    // by MORE than the keep buffer, so a player oscillating across a
+    // single boundary (see CHUNK_KEEP_BUFFER above) never triggers a
+    // load/unload/load/unload cycle.
+    const keepMin = current - CHUNK_LOAD_AHEAD - CHUNK_KEEP_BUFFER;
+    const keepMax = current + CHUNK_LOAD_BEHIND + CHUNK_KEEP_BUFFER;
     for (const idx of Array.from(this.loaded.keys())) {
-      if (!need.has(idx)) this.unloadChunk(idx);
+      if (idx < keepMin || idx > keepMax) this.unloadChunk(idx);
     }
   }
 
