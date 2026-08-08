@@ -1230,6 +1230,43 @@ function NativeRenderer({
       back.position.set(0, 18, -100);
       scene.add(back);
 
+      // ── One-time shader/geometry warm-up ─────────────────────────
+      // WebGL only compiles the GPU shader program for a given
+      // material+geometry combo the FIRST time it's actually rendered —
+      // and that compile happens synchronously on the render thread, so
+      // it shows up as a real stutter/freeze the instant a brand-new
+      // visual (a new InstancedMesh, a new emissive combo, the gate
+      // portal effect, a hazard spike, etc.) first appears on screen.
+      // Because the chunk streamer (below) builds each chunk's meshes
+      // lazily as the player reaches it, almost every DISTINCT combo
+      // used anywhere in the whole 4-map course debuts within the very
+      // first couple of chunks — Map 1 alone introduces the box
+      // platform, the glow strip, the InstancedMesh bevels/beacons, and
+      // the gate torus/portal/crown effects. That's exactly why lag was
+      // heaviest in Map 1, lighter in Map 2 (most combos already
+      // compiled), and gone by Map 3/4 (everything already warm).
+      //
+      // Fix: build one copy of EVERY platform/hazard from ALL 4 maps
+      // right here, force-compile every resulting shader program in one
+      // batch via renderer.compile(), then immediately tear the temporary
+      // meshes back down — all before the first frame is ever rendered,
+      // so none of this is visible. Materials survive (they're cached in
+      // standardMatCache, keyed by their visual properties, and get
+      // reused for free by the real chunks streamed in afterward);
+      // only the throwaway geometries are disposed.
+      try {
+        const warmPlatforms = buildPlatformMeshes(scene, COURSE_PLATFORMS);
+        const warmHazards = buildHazardMeshes(scene, HAZARDS);
+        renderer.compile(scene, camera);
+        for (const obj of warmPlatforms.objects) { scene.remove(obj); disposeObjectGeometry(obj); }
+        for (const obj of warmHazards.objects) { scene.remove(obj); disposeObjectGeometry(obj); }
+      } catch (err) {
+        // Never let a warm-up failure block the actual game from
+        // loading — worst case without it is the original lazy-compile
+        // stutter, not a broken scene.
+        console.error('[GameRenderer3D] shader warm-up failed:', err);
+      }
+
       // World — platforms/hazards are streamed in by chunk (see
       // ChunkManager above) rather than built all at once; only the
       // chunks around the player's starting position load here, and
