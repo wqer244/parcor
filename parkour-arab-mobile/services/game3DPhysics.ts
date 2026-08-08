@@ -547,6 +547,26 @@ export const HAZARDS: Hazard3D[] = [
   { id:'h5', x:0,    y:53.4, z:-504.5, radius:0.5, move:{ axis:'x', range:1.4, speed:1.1 } },
 ];
 
+// ── Physics-hot-path lookup structures ───────────────────────────────
+// Computed once at module load — the physics step below runs every
+// frame the player is grounded (i.e. almost always), so it must never
+// re-derive these from PLATFORMS by scanning/filtering on the fly.
+//
+// O(1) lookup by id, used for the moving-platform "carry" check — was a
+// PLATFORMS.find() (a full linear scan) running on every single grounded
+// physics step, not just while standing on a mover. With Map 4 having
+// grown PLATFORMS by ~35 entries, that scan was real, avoidable, global
+// per-frame cost, unrelated to which chunk is currently rendered.
+const PLATFORM_BY_ID: Map<string, Platform3D> = new Map(PLATFORMS.map(p => [p.id, p]));
+
+// Split once so the collision loop can use a plain property read for the
+// ~90% of platforms that never move or blink, instead of paying a
+// function-call (getPlatformPosition/isPlatformSolid) for every single
+// platform on every step regardless of whether it actually needs the
+// time-based check.
+const STATIC_PLATFORMS: Platform3D[] = PLATFORMS.filter(p => !p.move && !p.blink);
+const DYNAMIC_PLATFORMS: Platform3D[] = PLATFORMS.filter(p => p.move || p.blink);
+
 // ── PvP Arena — decorative structures (no collision) ────────
 // Pure set-dressing rendered once and never touched by physics: corner
 // towers, perimeter energy walls + light pillars, an entrance gate, and
@@ -645,7 +665,7 @@ export function stepPhysics3D(
   // exactly this platform's motion over the elapsed time — clamped so a
   // long gap between steps (e.g. a paused game) can't fling the player.
   if (onGround && state.standingPlatformId) {
-    const standingOn = PLATFORMS.find(p => p.id === state.standingPlatformId);
+    const standingOn = PLATFORM_BY_ID.get(state.standingPlatformId);
     if (standingOn && standingOn.move) {
       const prevT = state.platformT ?? t;
       const dt = Math.max(0, Math.min(0.25, t - prevT));
@@ -747,13 +767,35 @@ export function stepPhysics3D(
     }
   }
 
-  // Platform collision (feet land on top). Uses each platform's live
-  // position at time `t` (getPlatformPosition — a no-op for static
-  // platforms) so moving platforms are collided against where they
-  // actually are right now, not their resting x/y/z. Blinking platforms
-  // that are currently "off" (isPlatformSolid) are skipped entirely, so
-  // landing on one mid-vanish just falls through like a missed jump.
-  for (const p of PLATFORMS) {
+  // Platform collision (feet land on top). Split into two passes:
+  // STATIC_PLATFORMS (the vast majority) use a plain property read —
+  // exactly as fast as before Map 4 ever had moving/blinking platforms.
+  // Only DYNAMIC_PLATFORMS (m4-move*/m4-blink*, a handful) pay for the
+  // time-based getPlatformPosition/isPlatformSolid calls, since those
+  // are the only ones that actually need them.
+  for (const p of STATIC_PLATFORMS) {
+    const halfW = p.width / 2 + PLAYER_RADIUS - 0.05;
+    const halfD = p.depth / 2 + PLAYER_RADIUS - 0.05;
+
+    if (
+      Math.abs(newX - p.x) < halfW &&
+      Math.abs(newZ - p.z) < halfD &&
+      vy <= 0 &&
+      y >= p.y - 0.12 &&
+      newY <= p.y
+    ) {
+      const finished = p.type === 'finish';
+      return {
+        x: newX, y: p.y, z: newZ,
+        vx, vy: 0, vz,
+        onGround: true, facingAngle,
+        finished, checkpointIndex,
+        standingPlatformId: p.id, platformT: t,
+      };
+    }
+  }
+
+  for (const p of DYNAMIC_PLATFORMS) {
     if (!isPlatformSolid(p, t)) continue;
     const pos = getPlatformPosition(p, t);
     const halfW = p.width / 2 + PLAYER_RADIUS - 0.05;
