@@ -74,6 +74,18 @@ interface Props {
   // volume. Kept as a ref (not a prop callback that changes) so calling
   // it every frame-ish never triggers a React re-render.
   onFireRef?: React.MutableRefObject<((weapon: WeaponType, isLocal: boolean, distance: number) => void) | null>;
+  // Fired exactly once, right after the scene/shader warm-up (see the
+  // "One-time shader/geometry warm-up" block below) finishes and the
+  // very first frame is about to render. game.tsx has NO loading gate
+  // today — the physics loop and touch controls are already live the
+  // instant this component mounts, so all of that one-time setup work
+  // (asset loads + the warm-up compile pass) currently runs WHILE the
+  // player can already be actively trying to move on Map 1, and any
+  // hitch it causes is fully visible instead of hidden behind a loading
+  // screen. This callback lets the screen show a brief loading overlay
+  // until this fires, so that cost is paid up front and out of sight
+  // instead of reading as "Map 1 lags."
+  onReadyRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -152,64 +164,76 @@ function createModelRig(base: LoadedModel): ModelRig {
   return { kind: 'model', group: clone, mixer };
 }
 
+// ── Shared character geometry (built ONCE, reused by every player) ──
+// Every procedural character — local or remote — is the exact same
+// shape; only the materials' colors differ per skin. createCharacter()
+// used to build 9 brand-new BufferGeometry instances (2 boxes, 3
+// capsules, 3 spheres, 1 torus) from scratch on every single call —
+// harmless for one player, but a real hitch when several remote
+// players join within the same frame or two, which is exactly what
+// happens at the start of a race (everyone spawns together on Map 1,
+// then never re-joins again — matching why lag was heaviest right at
+// the start and gone by Map 3/4). These are geometry data only (never
+// repositioned or mutated), so sharing one instance across every
+// character is completely safe.
+const CHAR_GEO = {
+  head: new THREE.SphereGeometry(0.23, 20, 16),
+  hair: new THREE.SphereGeometry(0.235, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.62),
+  visor: new THREE.SphereGeometry(0.15, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
+  ring: new THREE.TorusGeometry(0.22, 0.035, 10, 20),
+  torso: new THREE.CapsuleGeometry(0.18, 0.52, 6, 12),
+  stripe: new THREE.BoxGeometry(0.07, 0.45, 0.2),
+  arm: new THREE.CapsuleGeometry(0.065, 0.42, 6, 10),
+  leg: new THREE.CapsuleGeometry(0.08, 0.5, 6, 10),
+  shoe: new THREE.BoxGeometry(0.18, 0.09, 0.28),
+};
+
 function createCharacter(skin: Skin): CharacterRig {
   const group = new THREE.Group();
   const accentHex = cssHex(skin.accent);
 
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: accentHex,
-    emissive: accentHex,
-    emissiveIntensity: 0.8,
-    metalness: 0.95,
-    roughness: 0.05,
+  // accent/pants/skin/hair are never mutated after creation, so — like
+  // every other material in this file — they're pulled from the shared
+  // standardMatCache instead of allocating a fresh one per character.
+  // suitMat is the one exception: applyHitFlash() below mutates its
+  // emissive color live for the red hit-flash, so it MUST stay a
+  // private instance per character — sharing it would make every
+  // player wearing the same suit color flash red together whenever any
+  // one of them gets hit.
+  const accentMat = getStandardMat({
+    color: accentHex, emissive: accentHex, emissiveIntensity: 0.8, metalness: 0.95, roughness: 0.05,
   });
   const suitMat = new THREE.MeshStandardMaterial({
     color: cssHex(skin.suit),
     metalness: 0.7,
     roughness: 0.35,
   });
-  const pantsMat = new THREE.MeshStandardMaterial({
-    color: cssHex(skin.pants),
-    metalness: 0.6,
-    roughness: 0.4,
-  });
-  const skinMat = new THREE.MeshStandardMaterial({
-    color: cssHex(skin.skin),
-    roughness: 0.75,
-    metalness: 0.0,
-  });
-  const hairMat = new THREE.MeshStandardMaterial({
-    color: cssHex(skin.hair),
-    roughness: 0.55,
-    metalness: 0.0,
-  });
+  const pantsMat = getStandardMat({ color: cssHex(skin.pants), metalness: 0.6, roughness: 0.4 });
+  const skinMat = getStandardMat({ color: cssHex(skin.skin), roughness: 0.75, metalness: 0.0 });
+  const hairMat = getStandardMat({ color: cssHex(skin.hair), roughness: 0.55, metalness: 0.0 });
 
   // Head — a small pivot group so it can nod/bob independently of the body
   const headPivot = new THREE.Group();
   headPivot.position.y = 1.66;
   group.add(headPivot);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.23, 20, 16), skinMat);
+  const head = new THREE.Mesh(CHAR_GEO.head, skinMat);
   headPivot.add(head);
 
   // Hair — a slightly-larger offset sphere cap sitting on the crown, cheap
   // but reads clearly as a hairstyle silhouette at gameplay distance.
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.235, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.62),
-    hairMat,
-  );
+  const hair = new THREE.Mesh(CHAR_GEO.hair, hairMat);
   hair.position.set(0, 0.05, 0.01);
   headPivot.add(hair);
 
   // Visor (glowing front half)
-  const visorGeo = new THREE.SphereGeometry(0.15, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5);
-  const visor = new THREE.Mesh(visorGeo, accentMat);
+  const visor = new THREE.Mesh(CHAR_GEO.visor, accentMat);
   visor.position.set(0, 0, -0.09);
   visor.rotation.x = 0.1;
   headPivot.add(visor);
 
   // Helmet ring
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 10, 20), accentMat);
+  const ring = new THREE.Mesh(CHAR_GEO.ring, accentMat);
   ring.rotation.x = Math.PI / 2;
   headPivot.add(ring);
 
@@ -218,52 +242,47 @@ function createCharacter(skin: Skin): CharacterRig {
   torsoPivot.position.y = 0.85;
   group.add(torsoPivot);
 
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.52, 6, 12), suitMat);
+  const torso = new THREE.Mesh(CHAR_GEO.torso, suitMat);
   torso.position.y = 0.25;
   torsoPivot.add(torso);
 
   // Chest stripe
-  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.45, 0.2), accentMat);
+  const stripe = new THREE.Mesh(CHAR_GEO.stripe, accentMat);
   stripe.position.set(0, 0.25, -0.18);
   torsoPivot.add(stripe);
 
   // Arms — pivoted at the shoulder so they swing naturally, not from the middle
-  const armGeo = new THREE.CapsuleGeometry(0.065, 0.42, 6, 10);
-
   const lArm = new THREE.Group();
   lArm.position.set(-0.29, 0.44, 0);
-  const lArmMesh = new THREE.Mesh(armGeo, suitMat);
+  const lArmMesh = new THREE.Mesh(CHAR_GEO.arm, suitMat);
   lArmMesh.position.y = -0.21;
   lArm.add(lArmMesh);
   torsoPivot.add(lArm);
 
   const rArm = new THREE.Group();
   rArm.position.set(0.29, 0.44, 0);
-  const rArmMesh = new THREE.Mesh(armGeo, suitMat);
+  const rArmMesh = new THREE.Mesh(CHAR_GEO.arm, suitMat);
   rArmMesh.position.y = -0.21;
   rArm.add(rArmMesh);
   torsoPivot.add(rArm);
 
   // Legs — pivoted at the hip, shoe is nested inside so it swings with the leg
-  const legGeo = new THREE.CapsuleGeometry(0.08, 0.5, 6, 10);
-  const shoeGeo = new THREE.BoxGeometry(0.18, 0.09, 0.28);
-
   const lLeg = new THREE.Group();
   lLeg.position.set(-0.11, 0.65, 0);
-  const lLegMesh = new THREE.Mesh(legGeo, pantsMat);
+  const lLegMesh = new THREE.Mesh(CHAR_GEO.leg, pantsMat);
   lLegMesh.position.y = -0.25;
   lLeg.add(lLegMesh);
-  const lShoe = new THREE.Mesh(shoeGeo, accentMat);
+  const lShoe = new THREE.Mesh(CHAR_GEO.shoe, accentMat);
   lShoe.position.set(0, -0.6, -0.03);
   lLeg.add(lShoe);
   group.add(lLeg);
 
   const rLeg = new THREE.Group();
   rLeg.position.set(0.11, 0.65, 0);
-  const rLegMesh = new THREE.Mesh(legGeo, pantsMat);
+  const rLegMesh = new THREE.Mesh(CHAR_GEO.leg, pantsMat);
   rLegMesh.position.y = -0.25;
   rLeg.add(rLegMesh);
-  const rShoe = new THREE.Mesh(shoeGeo, accentMat);
+  const rShoe = new THREE.Mesh(CHAR_GEO.shoe, accentMat);
   rShoe.position.set(0, -0.6, -0.03);
   rLeg.add(rShoe);
   group.add(rLeg);
@@ -1153,7 +1172,13 @@ function makeRenderer(gl: WebGLRenderingContext, w: number, h: number): THREE.We
 }
 
 // ── Web placeholder (WebGL blocked in iframe preview) ───────
-function WebPlaceholder() {
+function WebPlaceholder({ onReadyRef }: { onReadyRef?: React.MutableRefObject<(() => void) | null> }) {
+  // No GL warm-up happens on web (there's no WebGL scene at all here),
+  // so signal "ready" immediately — otherwise a loading overlay in
+  // game.tsx gated on onReadyRef would just hang forever in web preview.
+  React.useEffect(() => {
+    onReadyRef?.current?.();
+  }, [onReadyRef]);
   return (
     <View style={StyleSheet.absoluteFill}>
       <LinearGradient
@@ -1190,7 +1215,7 @@ function WebPlaceholder() {
 function NativeRenderer({
   physStateRef, playerSkin, remotePlayersRef, cameraModeRef, orbitYawRef, orbitPitchRef,
   weaponTakenAtRef, currentWeaponRef, localAttackRef, localDamageAtRef,
-  isAimingRef, aimTargetIdRef, onFireRef,
+  isAimingRef, aimTargetIdRef, onFireRef, onReadyRef,
 }: Props) {
   const rafRef = useRef<number>(0);
 
@@ -2035,6 +2060,14 @@ function NativeRenderer({
         (gl as any).endFrameEXP?.();
       };
 
+      // Everything above this point (lights, the shader/geometry warm-up
+      // pass, the first chunk load, weapon pedestals, starfield) is the
+      // one-time setup cost. Signal game.tsx now, right before the very
+      // first frame renders, so it can drop a loading overlay it may have
+      // been showing — the goal is for all of that cost to have already
+      // happened by the time the player can see/feel the game.
+      onReadyRef?.current?.();
+
       animate();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2052,6 +2085,6 @@ function NativeRenderer({
 // ── Public export — platform-aware ─────────────────────────
 export function GameRenderer3D(props: Props) {
   // Web preview (sandboxed iframe) doesn't support WebGL — show placeholder
-  if (Platform.OS === 'web') return <WebPlaceholder />;
+  if (Platform.OS === 'web') return <WebPlaceholder onReadyRef={props.onReadyRef} />;
   return <NativeRenderer {...props} />;
 }
